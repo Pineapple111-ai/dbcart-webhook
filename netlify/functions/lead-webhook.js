@@ -7,30 +7,37 @@ exports.handler = async (event) => {
     const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
     const SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbw4mqYB-e-MNYbwWxgE0kFqeppeqmyRKA6okDs5s2vB278dwMUgxMOwyhJilzU6CKwN/exec";
 
+    const rawReferer = event.headers.referer || event.headers.referrer || "";
+    let source = rawReferer;
+    if (rawReferer.includes("instagram")) {
+      source = "ig";
+    } else if (rawReferer.includes("facebook") || rawReferer.includes("fb.")) {
+      source = "fb";
+    }
+
     const message = `📩 새 일수 신청\n\n이름: ${name || "-"}\n연락처: ${phone || "-"}\n신청시각: ${date || ""} ${time || ""}`;
 
-    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: CHAT_ID,
-        text: message,
+    await Promise.all([
+      fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: CHAT_ID,
+          text: message,
+        }),
       }),
-    });
-
-    const referer = event.headers.referer || event.headers.referrer || "";
-
-    await fetch(SHEET_WEBAPP_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: name || "",
-        phone: phone || "",
-        date: date || "",
-        time: time || "",
-        referer: referer,
+      fetch(SHEET_WEBAPP_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name || "",
+          phone: phone || "",
+          date: date || "",
+          time: time || "",
+          referer: source,
+        }),
       }),
-    });
+    ]);
 
     return { statusCode: 200, body: "OK" };
   } catch (err) {
