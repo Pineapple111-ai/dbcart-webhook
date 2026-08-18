@@ -1,13 +1,13 @@
 exports.handler = async (event) => {
   try {
     const params = event.queryStringParameters || {};
-    const { title, name, phone, date, time } = params;
+    const { title, name, phone, date, time, referer } = params;
 
     const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
     const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
     const SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbw4mqYB-e-MNYbwWxgE0kFqeppeqmyRKA6okDs5s2vB278dwMUgxMOwyhJilzU6CKwN/exec";
 
-    const rawReferer = event.headers.referer || event.headers.referrer || "";
+    const rawReferer = referer || "";
     let source = rawReferer;
     if (rawReferer.includes("instagram")) {
       source = "ig";
