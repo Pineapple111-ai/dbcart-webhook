@@ -1,3 +1,18 @@
+function formatApplyTime(dateStr, timeStr) {
+  const parts = (dateStr || "").replace(/\./g, "-").split("-");
+  const year = parts[0];
+  const month = parseInt(parts[1], 10);
+  const day = parseInt(parts[2], 10);
+
+  const [hourStr, minStr] = (timeStr || "0:00").split(":");
+  let hour = parseInt(hourStr, 10);
+  const ampm = hour < 12 ? "am" : "pm";
+  let hour12 = hour % 12;
+  if (hour12 === 0) hour12 = 12;
+
+  return `${year}. ${month}. ${day} ${ampm} ${hour12}:${minStr}`;
+}
+
 exports.handler = async (event) => {
   try {
     const params = event.queryStringParameters || {};
@@ -15,7 +30,9 @@ exports.handler = async (event) => {
       source = "fb";
     }
 
-    const message = `📩 새 일수 신청\n\n이름: ${name || "-"}\n연락처: ${phone || "-"}\n신청시각: ${date || ""} ${time || ""}`;
+    const applyTime = formatApplyTime(date, time);
+
+    const message = `📩 새 일수 신청\n\n이름: ${name || "-"}\n연락처: ${phone || "-"}\n신청시각: ${applyTime}`;
 
     await Promise.all([
       fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
