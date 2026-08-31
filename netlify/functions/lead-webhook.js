@@ -17,6 +17,9 @@ exports.handler = async (event) => {
   try {
     const params = event.queryStringParameters || {};
     const { title, name, phone, date, time, referer } = params;
+        if (!name && !phone) {
+      return { statusCode: 200, body: "OK (ping)" };
+    }
 
     const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
     const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
