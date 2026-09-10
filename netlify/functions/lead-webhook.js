@@ -13,7 +13,7 @@ function formatApplyTime(dateStr, timeStr) {
   return `${year}. ${month}. ${day} ${ampm} ${hour12}:${minStr}`;
 }
 
-exports.handler = async (event, context) => {
+exports.handler = async (event) => {
   try {
     const params = event.queryStringParameters || {};
     const { title, name, phone, date, time, referer } = params;
@@ -36,7 +36,7 @@ exports.handler = async (event, context) => {
     const applyTime = formatApplyTime(date, time);
     const message = `📩 새 리드 접수\n\n이름: ${name || "-"}\n연락처: ${phone || "-"}\n신청시각: ${applyTime}`;
 
-        const sendTasks = Promise.all([
+    await Promise.all([
       fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -53,9 +53,7 @@ exports.handler = async (event, context) => {
           referer: source,
         }),
       }),
-    ]).catch((e) => console.error("send error", e));
-
-    context.callbackWaitsForEmptyEventLoop = false;
+    ]);
 
     return { statusCode: 200, body: "OK" };
   } catch (err) {
