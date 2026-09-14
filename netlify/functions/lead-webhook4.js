@@ -23,7 +23,7 @@ exports.handler = async (event) => {
     }
 
     const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-    const CHAT_ID_4 = "-549184099";
+    const CHAT_ID_4 = "-5498184099";
 
     const applyTime = formatApplyTime(date, time);
     const message = `📩 새 리드 접수\n\n이름: ${name || "-"}\n연락처: ${phone || "-"}\n신청시각: ${applyTime}`;
