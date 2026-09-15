@@ -26,7 +26,7 @@ exports.handler = async (event) => {
     const CHAT_ID_4 = "-5498184099";
 
     const applyTime = formatApplyTime(date, time);
-        const message = `📩 새 리드 접수\n\n이름: ${name || "-"}\n연락처: ${phone || "-"}\n캠페인: ${campaign || "-"}\n신청시각: ${applyTime}`;
+            const message = `📩 새 리드 접수\n\n이름: ${name || "-"}\n연락처: ${phone || "-"}\n신청시각: ${applyTime}`;
 
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
       method: "POST",
