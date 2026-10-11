@@ -37,12 +37,18 @@ exports.handler = async (event) => {
 
   const name = params.name || "-";
   const phone = params.phone || "-";
+  const option = (params.option || "")
+    .split(/[,|\/]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(", ") || "-";
   const applyTime = formatApplyTime(params.date, params.time);
 
   const text =
     `📥 신규 DB 접수\n\n` +
     `이름: ${name}\n` +
     `연락처: ${phone}\n` +
+    `패키지 옵션: ${option}\n` +
     `신청시각: ${applyTime}`;
 
   try {
