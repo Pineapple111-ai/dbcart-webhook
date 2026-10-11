@@ -35,6 +35,7 @@ exports.handler = async (event) => {
     }
   }
 
+  const brand = params.brand || "LG";
   const name = params.name || "-";
   const phone = params.phone || "-";
   const option = (params.option || "")
@@ -45,7 +46,7 @@ exports.handler = async (event) => {
   const applyTime = formatApplyTime(params.date, params.time);
 
   const text =
-    `📥 신규 DB 접수\n\n` +
+    `📥 신규 DB 접수 [${brand}]\n\n` +
     `이름: ${name}\n` +
     `연락처: ${phone}\n` +
     `패키지 옵션: ${option}\n` +
