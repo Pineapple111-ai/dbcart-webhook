@@ -27,6 +27,11 @@ function clean(v) {
   return s.startsWith("{#") ? "" : s;
 }
 
+// 인스타그램·페이스북 앱 안에서 열린 경우
+function isMetaApp(agent) {
+  return /Instagram|FBAN|FBAV|FB_IAB/i.test(agent);
+}
+
 exports.handler = async (event) => {
   let params = { ...(event.queryStringParameters || {}) };
 
@@ -44,9 +49,12 @@ exports.handler = async (event) => {
   const name = params.name || "-";
   const phone = params.phone || "-";
   const utm = clean(params.utm);
+  const agent = clean(params.agent);
   const applyTime = formatApplyTime(params.date, params.time);
 
-  const header = utm
+  const fromAd = utm || isMetaApp(agent);
+
+  const header = fromAd
     ? `📩 새 리드 접수`
     : `⚠️ 광고유입 아님\n📩 새 리드 접수`;
 
