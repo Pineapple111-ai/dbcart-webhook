@@ -46,6 +46,7 @@ exports.handler = async (event) => {
     }
   }
 
+  const debug = params.debug === "1";
   const name = params.name || "-";
   const phone = params.phone || "-";
   const utm = clean(params.utm);
@@ -64,8 +65,9 @@ exports.handler = async (event) => {
     `연락처: ${phone}\n` +
     `신청시각: ${applyTime}`;
 
+  let result = "";
   try {
-    await fetch(
+    const res = await fetch(
       `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
       {
         method: "POST",
@@ -73,8 +75,22 @@ exports.handler = async (event) => {
         body: JSON.stringify({ chat_id: CHAT_ID, text }),
       }
     );
+    result = await res.text();
+    if (!res.ok) console.error("Telegram rejected:", result);
   } catch (err) {
+    result = "fetch error: " + err.message;
     console.error("Telegram error:", err);
+  }
+
+  if (debug) {
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+      body:
+        `fromAd: ${fromAd ? "yes" : "no"}\n` +
+        `agent: ${agent}\n\n` +
+        `telegram: ${result}`,
+    };
   }
 
   return { statusCode: 200, body: "OK" };
