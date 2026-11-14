@@ -199,11 +199,13 @@ async function getManPerTr() {
   return (krwPerVnd * 1000000) / 10000;
 }
 
-// 메시지 보내기 (입력창 버튼 사용 시 보고 방에 같이 표시)
-async function reply(chatId, text, replyTo) {
+// 메시지 보내기
+// - 보고 방: 답장 형태 없이 일반 메시지로
+// - 입력창 버튼은 withKeyboard일 때만(/메뉴) 붙임
+async function reply(chatId, text, replyTo, withKeyboard) {
   const body = { chat_id: chatId, text };
-  if (replyTo) body.reply_to_message_id = replyTo;
-  if (chatId === REPORT_CHAT && useKeyboard) {
+  if (replyTo && chatId !== REPORT_CHAT) body.reply_to_message_id = replyTo;
+  if (withKeyboard && chatId === REPORT_CHAT && useKeyboard) {
     body.reply_markup = REPLY_KEYBOARD;
   }
   return tg("sendMessage", body);
@@ -353,7 +355,7 @@ async function handleSettle(chatId, msgId, date) {
 async function handleMenu(chatId, msgId) {
   // 입력창 버튼: 켜거나 끄기
   if (useKeyboard) {
-    await reply(chatId, "아래 버튼으로 보고를 확인하세요.\n날짜별 보기: /정산 11/13, /상담 어제", msgId);
+    await reply(chatId, "아래 버튼으로 보고를 확인하세요.\n날짜별 보기: /정산 11/13, /상담 어제", msgId, true);
   } else {
     await tg("sendMessage", {
       chat_id: chatId,
