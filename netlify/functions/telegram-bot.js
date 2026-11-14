@@ -1,5 +1,5 @@
 // 디비알림봇 명령어 처리
-// - 보고 방: /광고, /상담, /메뉴 (+ 버튼)
+// - 보고 방: /광고, /상담, /정산, /메뉴 (+ 버튼)
 // - 디비 (여성대출) 방: /삭제, /보고
 const LEAD_CHAT = "-5318830146";   // 디비 (여성대출) 방
 const REPORT_CHAT = "-5391256412"; // 보고 방
@@ -12,6 +12,7 @@ const BUTTON_MODE = "both";
 
 const BTN_ADS = "📊 광고";
 const BTN_CONSULT = "💬 상담";
+const BTN_SETTLE = "🧾 정산";
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -28,7 +29,7 @@ const usePinned = BUTTON_MODE === "pinned" || BUTTON_MODE === "both";
 
 // A: 입력창 아래 버튼
 const REPLY_KEYBOARD = {
-  keyboard: [[{ text: BTN_ADS }, { text: BTN_CONSULT }]],
+  keyboard: [[{ text: BTN_ADS }, { text: BTN_CONSULT }, { text: BTN_SETTLE }]],
   resize_keyboard: true,
   is_persistent: true,
 };
@@ -38,6 +39,7 @@ const INLINE_MENU = {
   inline_keyboard: [[
     { text: BTN_ADS, callback_data: "ads" },
     { text: BTN_CONSULT, callback_data: "consult" },
+    { text: BTN_SETTLE, callback_data: "settle" },
   ]],
 };
 
@@ -51,18 +53,28 @@ async function tg(method, body) {
   return res.json();
 }
 
+// 한국시간 현재
+function kstNow() {
+  return new Date(Date.now() + 9 * 60 * 60 * 1000);
+}
+
 // 한국시간 기준 오늘 자정 (ISO)
 function kstTodayStart() {
-  const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  return `${kstDateStr()}T00:00:00+09:00`;
+}
+
+// 한국시간 오늘 "2026-11-14"
+function kstDateStr() {
+  const now = kstNow();
   const y = now.getUTCFullYear();
   const m = String(now.getUTCMonth() + 1).padStart(2, "0");
   const d = String(now.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${d}T00:00:00+09:00`;
+  return `${y}-${m}-${d}`;
 }
 
 // 한국시간 현재 시각 표시용 (11/11 15:20)
 function kstNowLabel() {
-  const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const now = kstNow();
   const m = now.getUTCMonth() + 1;
   const d = now.getUTCDate();
   const hh = String(now.getUTCHours()).padStart(2, "0");
@@ -74,6 +86,11 @@ function kstNowLabel() {
 function won(n) {
   const man = (n / 10000).toFixed(1).replace(/\.0$/, "");
   return `${man}만원 (${Math.round(n).toLocaleString("ko-KR")}원)`;
+}
+
+// 만원 숫자 표시 (반올림, 천 단위 콤마)
+function man(n) {
+  return `${Math.round(n).toLocaleString("ko-KR")}만원`;
 }
 
 // 메타 광고계정 오늘 지출
@@ -110,6 +127,26 @@ async function getTodayLeads() {
   const res = await fetch(url, { headers: sbHeaders });
   if (!res.ok) throw new Error("Supabase " + res.status);
   return res.json();
+}
+
+// 정산 시트에서 오늘 데이터 가져오기
+async function getSettleRows(date) {
+  const url =
+    `${process.env.SETTLE_URL}?key=${encodeURIComponent(process.env.SETTLE_KEY)}` +
+    `&date=${date}`;
+  const res = await fetch(url, { redirect: "follow" });
+  const json = await res.json();
+  if (json.error) throw new Error("정산 시트: " + json.error);
+  return json.rows || [];
+}
+
+// 1tr(백만 동)이 몇 만원인지
+async function getManPerTr() {
+  const res = await fetch("https://open.er-api.com/v6/latest/VND");
+  const json = await res.json();
+  const krwPerVnd = json && json.rates && json.rates.KRW;
+  if (!krwPerVnd) throw new Error("환율 조회 실패");
+  return (krwPerVnd * 1000000) / 10000;
 }
 
 // 메시지 보내기 (입력창 버튼 사용 시 보고 방에 같이 표시)
@@ -198,6 +235,70 @@ async function handleConsult(chatId, msgId) {
   await reply(chatId, text, msgId);
 }
 
+// 🧾 정산 보고
+async function handleSettle(chatId, msgId) {
+  const date = kstDateStr();
+  const [, mm, dd] = date.split("-");
+  const label = `* ${Number(mm)}/${Number(dd)}`;
+
+  const rows = await getSettleRows(date);
+  if (!rows.length) {
+    await reply(chatId, `${label}\n\n오늘 입력된 정산이 없습니다.`, msgId);
+    return;
+  }
+
+  // tr이 있을 때만 환율 조회
+  let manPerTr = null;
+  let rateError = "";
+  if (rows.some((r) => r.unit === "tr")) {
+    try {
+      manPerTr = await getManPerTr();
+    } catch (e) {
+      rateError = e.message;
+    }
+  }
+
+  // 한 줄 금액 표시 + 만원 환산값
+  const amountOf = (r) => {
+    if (r.unit === "tr") {
+      if (manPerTr === null) return { text: `${r.amount}tr`, man: 0 };
+      const m = r.amount * manPerTr;
+      return { text: `${r.amount}tr (약 ${man(m)})`, man: m };
+    }
+    return { text: man(r.amount), man: r.amount };
+  };
+
+  const lineOf = (r) => {
+    const a = amountOf(r);
+    let t = r.item;
+    if (r.name) t += ` (${r.name})`;
+    if (r.note) t += ` ${r.note}`;
+    return { text: `${t} - ${a.text}`, man: a.man };
+  };
+
+  const income = rows.filter((r) => r.type === "수입").map(lineOf);
+  const expense = rows.filter((r) => r.type === "지출").map(lineOf);
+
+  const incomeTotal = income.reduce((s, l) => s + l.man, 0);
+  const expenseTotal = expense.reduce((s, l) => s + l.man, 0);
+
+  let text = `${label}\n\n수입\n\n`;
+  text += income.length
+    ? income.map((l, i) => `${i + 1}. ${l.text}`).join("\n")
+    : "없음";
+  text += `\n\n수입 총 ${man(incomeTotal)}\n\n지출\n\n`;
+  text += expense.length ? expense.map((l) => l.text).join("\n") : "없음";
+  text += `\n\n지출 총 ${man(expenseTotal)}\n\n총 ${man(incomeTotal - expenseTotal)}`;
+
+  if (manPerTr !== null) {
+    text += `\n\n(환율 1tr ≈ ${manPerTr.toFixed(1)}만원 기준)`;
+  } else if (rateError) {
+    text += `\n\n⚠️ ${rateError} — tr 금액은 합계에서 빠졌습니다.`;
+  }
+
+  await reply(chatId, text, msgId);
+}
+
 // /메뉴
 async function handleMenu(chatId, msgId) {
   // 입력창 버튼: 켜거나 끄기
@@ -263,6 +364,7 @@ async function handleButton(cq) {
   try {
     if (cq.data === "ads") await handleAds(chatId);
     else if (cq.data === "consult") await handleConsult(chatId);
+    else if (cq.data === "settle") await handleSettle(chatId);
   } catch (err) {
     console.error("button error:", err);
     await reply(chatId, "⚠️ 처리 중 오류: " + err.message);
@@ -306,6 +408,8 @@ exports.handler = async (event) => {
         await handleAds(chatId, msg.message_id);
       } else if (text.startsWith("/상담") || text === BTN_CONSULT) {
         await handleConsult(chatId, msg.message_id);
+      } else if (text.startsWith("/정산") || text === BTN_SETTLE) {
+        await handleSettle(chatId, msg.message_id);
       } else if (text.startsWith("/메뉴") || text.startsWith("/start")) {
         await handleMenu(chatId, msg.message_id);
       }
