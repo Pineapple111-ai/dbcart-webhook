@@ -1,5 +1,5 @@
 // 디비알림봇 명령어 처리
-// - 보고 방: /광고, /상담, /정산, /메뉴 (+ 버튼)
+// - 보고 방: /광고, /상담, /정산 (+ 날짜), /메뉴 (+ 버튼)
 // - 디비 (여성대출) 방: /삭제, /보고
 const LEAD_CHAT = "-5318830146";   // 디비 (여성대출) 방
 const REPORT_CHAT = "-5391256412"; // 보고 방
@@ -53,34 +53,76 @@ async function tg(method, body) {
   return res.json();
 }
 
+// ===== 날짜 =====
+
 // 한국시간 현재
 function kstNow() {
   return new Date(Date.now() + 9 * 60 * 60 * 1000);
 }
 
-// 한국시간 기준 오늘 자정 (ISO)
-function kstTodayStart() {
-  return `${kstDateStr()}T00:00:00+09:00`;
+// Date → "2026-11-14"
+function ymd(d) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
 }
 
 // 한국시간 오늘 "2026-11-14"
-function kstDateStr() {
-  const now = kstNow();
-  const y = now.getUTCFullYear();
-  const m = String(now.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(now.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+function kstToday() {
+  return ymd(kstNow());
 }
 
-// 한국시간 현재 시각 표시용 (11/11 15:20)
-function kstNowLabel() {
+// "2026-11-14" → 다음날 "2026-11-15"
+function nextDay(date) {
+  const d = new Date(date + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + 1);
+  return ymd(d);
+}
+
+// "2026-11-14" → "11/14"
+function shortLabel(date) {
+  const [, m, d] = date.split("-");
+  return `${Number(m)}/${Number(d)}`;
+}
+
+// 한국시간 현재 시각 "15:20"
+function kstTimeLabel() {
   const now = kstNow();
-  const m = now.getUTCMonth() + 1;
-  const d = now.getUTCDate();
   const hh = String(now.getUTCHours()).padStart(2, "0");
   const mm = String(now.getUTCMinutes()).padStart(2, "0");
-  return `${m}/${d} ${hh}:${mm}`;
+  return `${hh}:${mm}`;
 }
+
+// 명령어 뒤의 날짜 읽기. 없으면 오늘, 형식이 틀리면 null
+function parseDateArg(arg) {
+  const s = (arg || "").trim();
+  if (!s || s === "오늘") return kstToday();
+  if (s === "어제") {
+    const d = kstNow();
+    d.setUTCDate(d.getUTCDate() - 1);
+    return ymd(d);
+  }
+
+  let m = s.match(/(\d{4})\s*[\/.\-]\s*(\d{1,2})\s*[\/.\-]\s*(\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+
+  m = s.match(/(\d{1,2})\s*[\/.\-]\s*(\d{1,2})/);
+  if (m) {
+    const y = kstNow().getUTCFullYear();
+    return `${y}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
+  }
+  return null;
+}
+
+// 보고 제목 뒤에 붙는 날짜 표시
+function titleSuffix(date) {
+  return date === kstToday()
+    ? `오늘 ${shortLabel(date)} ${kstTimeLabel()} 기준`
+    : shortLabel(date);
+}
+
+// ===== 금액 표시 =====
 
 // 원 → "136.1만원 (1,360,841원)"
 function won(n) {
@@ -93,23 +135,33 @@ function man(n) {
   return `${Math.round(n).toLocaleString("ko-KR")}만원`;
 }
 
-// 메타 광고계정 오늘 지출
-async function getSpend(accountId, token) {
+// ===== 데이터 조회 =====
+
+// 메타 광고계정 지출 (해당 날짜)
+async function getSpend(accountId, token, date) {
+  const range =
+    date === kstToday()
+      ? "date_preset=today"
+      : `time_range=${encodeURIComponent(JSON.stringify({ since: date, until: date }))}`;
   const url =
     `https://graph.facebook.com/v27.0/act_${accountId}/insights` +
-    `?fields=spend&date_preset=today&access_token=${token}`;
+    `?fields=spend&${range}&access_token=${token}`;
   const res = await fetch(url);
   const json = await res.json();
   if (json.error) throw new Error(json.error.message);
   return json.data && json.data[0] ? Number(json.data[0].spend) : 0;
 }
 
-// 오늘 디비 개수 (삭제 처리된 건 제외)
-async function getLeadCount() {
-  const since = encodeURIComponent(kstTodayStart());
-  const url =
-    `${SB_URL}/rest/v1/report_leads` +
-    `?select=id&deleted=eq.false&created_at=gte.${since}`;
+// 해당 날짜 디비 조건 (삭제 처리된 건 제외)
+function leadDateFilter(date) {
+  const start = encodeURIComponent(`${date}T00:00:00+09:00`);
+  const end = encodeURIComponent(`${nextDay(date)}T00:00:00+09:00`);
+  return `deleted=eq.false&created_at=gte.${start}&created_at=lt.${end}`;
+}
+
+// 해당 날짜 디비 개수
+async function getLeadCount(date) {
+  const url = `${SB_URL}/rest/v1/report_leads?select=id&${leadDateFilter(date)}`;
   const res = await fetch(url, {
     headers: { ...sbHeaders, Prefer: "count=exact", Range: "0-0" },
   });
@@ -117,19 +169,17 @@ async function getLeadCount() {
   return Number(range.split("/")[1] || 0);
 }
 
-// 오늘 디비 상태 목록 (삭제 처리된 건 제외)
-async function getTodayLeads() {
-  const since = encodeURIComponent(kstTodayStart());
+// 해당 날짜 디비 상태 목록
+async function getLeads(date) {
   const url =
     `${SB_URL}/rest/v1/report_leads` +
-    `?select=kakao,kakao_reply,call_status,result` +
-    `&deleted=eq.false&created_at=gte.${since}`;
+    `?select=kakao,kakao_reply,call_status,result&${leadDateFilter(date)}`;
   const res = await fetch(url, { headers: sbHeaders });
   if (!res.ok) throw new Error("Supabase " + res.status);
   return res.json();
 }
 
-// 정산 시트에서 오늘 데이터 가져오기
+// 정산 시트에서 해당 날짜 데이터
 async function getSettleRows(date) {
   const url =
     `${process.env.SETTLE_URL}?key=${encodeURIComponent(process.env.SETTLE_KEY)}` +
@@ -159,31 +209,33 @@ async function reply(chatId, text, replyTo) {
   return tg("sendMessage", body);
 }
 
+// ===== 보고 =====
+
 // 📊 광고 보고
-async function handleAds(chatId, msgId) {
+async function handleAds(chatId, msgId, date) {
   let spendA = 0;
   let spendB = 0;
   const errors = [];
 
   try {
-    spendA = await getSpend(process.env.META_ACCOUNT_A, process.env.META_TOKEN_A);
+    spendA = await getSpend(process.env.META_ACCOUNT_A, process.env.META_TOKEN_A, date);
   } catch (e) {
     errors.push("계정A 조회 실패: " + e.message);
   }
   try {
-    spendB = await getSpend(process.env.META_ACCOUNT_B, process.env.META_TOKEN_B);
+    spendB = await getSpend(process.env.META_ACCOUNT_B, process.env.META_TOKEN_B, date);
   } catch (e) {
     errors.push("계정B 조회 실패: " + e.message);
   }
 
   const total = spendA + spendB;
-  const count = await getLeadCount();
+  const count = await getLeadCount(date);
   const cpl = count > 0 ? won(total / count) : "-";
 
   let text =
-    `📊 오늘 광고 보고 (${kstNowLabel()} 기준)\n\n` +
-    `오늘 총 지출 광고비 : ${won(total)}\n` +
-    `오늘 총 유입 디비개수 : ${count}개\n` +
+    `📊 광고 보고 (${titleSuffix(date)})\n\n` +
+    `총 지출 광고비 : ${won(total)}\n` +
+    `총 유입 디비개수 : ${count}개\n` +
     `디비 개당 단가 : ${cpl}`;
 
   if (errors.length) text += `\n\n⚠️ ${errors.join("\n⚠️ ")}`;
@@ -192,8 +244,8 @@ async function handleAds(chatId, msgId) {
 }
 
 // 💬 상담 보고
-async function handleConsult(chatId, msgId) {
-  const rows = await getTodayLeads();
+async function handleConsult(chatId, msgId, date) {
+  const rows = await getLeads(date);
   const cnt = (field, value) => rows.filter((r) => r[field] === value).length;
   const pending = (n) => (n > 0 ? `\n- 진행 전 : ${n}개` : "");
 
@@ -212,7 +264,7 @@ async function handleConsult(chatId, msgId) {
   const rejected = cnt("result", "거절");
 
   const text =
-    `💬 오늘 상담 현황 (${kstNowLabel()} 기준)\n\n` +
+    `💬 상담 현황 (${titleSuffix(date)})\n\n` +
     `1. DB 유입 현황\n` +
     `- 총 DB : ${total}개\n` +
     `- 카톡 친추 가능 : ${kakaoOk}개\n` +
@@ -236,14 +288,12 @@ async function handleConsult(chatId, msgId) {
 }
 
 // 🧾 정산 보고
-async function handleSettle(chatId, msgId) {
-  const date = kstDateStr();
-  const [, mm, dd] = date.split("-");
-  const label = `* ${Number(mm)}/${Number(dd)}`;
+async function handleSettle(chatId, msgId, date) {
+  const label = `* ${shortLabel(date)}`;
 
   const rows = await getSettleRows(date);
   if (!rows.length) {
-    await reply(chatId, `${label}\n\n오늘 입력된 정산이 없습니다.`, msgId);
+    await reply(chatId, `${label}\n\n입력된 정산이 없습니다.`, msgId);
     return;
   }
 
@@ -291,7 +341,7 @@ async function handleSettle(chatId, msgId) {
   text += `\n\n지출 총 ${man(expenseTotal)}\n\n총 ${man(incomeTotal - expenseTotal)}`;
 
   if (manPerTr !== null) {
-    text += `\n\n(환율 1tr ≈ ${manPerTr.toFixed(1)}만원 기준)`;
+    text += `\n\n(환율 1tr ≈ ${manPerTr.toFixed(1)}만원, 현재 환율 기준)`;
   } else if (rateError) {
     text += `\n\n⚠️ ${rateError} — tr 금액은 합계에서 빠졌습니다.`;
   }
@@ -303,7 +353,7 @@ async function handleSettle(chatId, msgId) {
 async function handleMenu(chatId, msgId) {
   // 입력창 버튼: 켜거나 끄기
   if (useKeyboard) {
-    await reply(chatId, "아래 버튼으로 보고를 확인하세요.", msgId);
+    await reply(chatId, "아래 버튼으로 보고를 확인하세요.\n날짜별 보기: /정산 11/13, /상담 어제", msgId);
   } else {
     await tg("sendMessage", {
       chat_id: chatId,
@@ -354,21 +404,32 @@ async function handleDelete(chatId, msg) {
   }
 }
 
-// 고정 메뉴 버튼을 눌렀을 때
+// 고정 메뉴 버튼을 눌렀을 때 (항상 오늘)
 async function handleButton(cq) {
   const chatId = String(cq.message.chat.id);
   await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "불러오는 중..." });
 
   if (chatId !== REPORT_CHAT) return;
 
+  const today = kstToday();
   try {
-    if (cq.data === "ads") await handleAds(chatId);
-    else if (cq.data === "consult") await handleConsult(chatId);
-    else if (cq.data === "settle") await handleSettle(chatId);
+    if (cq.data === "ads") await handleAds(chatId, null, today);
+    else if (cq.data === "consult") await handleConsult(chatId, null, today);
+    else if (cq.data === "settle") await handleSettle(chatId, null, today);
   } catch (err) {
     console.error("button error:", err);
     await reply(chatId, "⚠️ 처리 중 오류: " + err.message);
   }
+}
+
+// 보고 명령어 처리 (날짜 붙은 것 포함)
+async function runReport(chatId, msgId, handler, arg) {
+  const date = parseDateArg(arg);
+  if (!date) {
+    await reply(chatId, "날짜 형식을 확인해주세요. 예: /정산 11/13, /상담 어제", msgId);
+    return;
+  }
+  await handler(chatId, msgId, date);
 }
 
 exports.handler = async (event) => {
@@ -399,30 +460,27 @@ exports.handler = async (event) => {
     return { statusCode: 200, body: "OK" };
   }
 
-  // "/광고@WomanDB3bot" 같은 형태도 처리
+  // "/광고@WomanDB3bot 11/13" 같은 형태도 처리
   const text = msg.text.trim().replace(/@\w+/, "");
+  const arg = text.replace(/^\/\S+/, "").trim(); // 명령어 뒤 날짜 부분
+  const id = msg.message_id;
 
   try {
     if (chatId === REPORT_CHAT) {
-      if (text.startsWith("/광고") || text === BTN_ADS) {
-        await handleAds(chatId, msg.message_id);
-      } else if (text.startsWith("/상담") || text === BTN_CONSULT) {
-        await handleConsult(chatId, msg.message_id);
-      } else if (text.startsWith("/정산") || text === BTN_SETTLE) {
-        await handleSettle(chatId, msg.message_id);
-      } else if (text.startsWith("/메뉴") || text.startsWith("/start")) {
-        await handleMenu(chatId, msg.message_id);
-      }
+      if (text.startsWith("/광고")) await runReport(chatId, id, handleAds, arg);
+      else if (text.startsWith("/상담")) await runReport(chatId, id, handleConsult, arg);
+      else if (text.startsWith("/정산")) await runReport(chatId, id, handleSettle, arg);
+      else if (text === BTN_ADS) await handleAds(chatId, id, kstToday());
+      else if (text === BTN_CONSULT) await handleConsult(chatId, id, kstToday());
+      else if (text === BTN_SETTLE) await handleSettle(chatId, id, kstToday());
+      else if (text.startsWith("/메뉴") || text.startsWith("/start")) await handleMenu(chatId, id);
     } else {
-      if (text.startsWith("/보고")) {
-        await handleAds(chatId, msg.message_id);
-      } else if (text.startsWith("/삭제")) {
-        await handleDelete(chatId, msg);
-      }
+      if (text.startsWith("/보고")) await runReport(chatId, id, handleAds, arg);
+      else if (text.startsWith("/삭제")) await handleDelete(chatId, msg);
     }
   } catch (err) {
     console.error("bot error:", err);
-    await reply(chatId, "⚠️ 처리 중 오류: " + err.message, msg.message_id);
+    await reply(chatId, "⚠️ 처리 중 오류: " + err.message, id);
   }
 
   return { statusCode: 200, body: "OK" };
