@@ -4,8 +4,11 @@
 const LEAD_CHAT = "-5318830146";   // 디비 (여성대출) 방
 const REPORT_CHAT = "-5391256412"; // 보고 방
 
-// 버튼 방식: "pinned" = 고정 메시지 버튼(B), "keyboard" = 입력창 아래 버튼(A)
-const BUTTON_MODE = "pinned";
+// 버튼 방식
+// "both"     = 입력창 아래 버튼(A) + 고정 메시지 버튼(B)
+// "pinned"   = 고정 메시지 버튼(B)만
+// "keyboard" = 입력창 아래 버튼(A)만
+const BUTTON_MODE = "both";
 
 const BTN_ADS = "📊 광고";
 const BTN_CONSULT = "💬 상담";
@@ -19,6 +22,9 @@ const sbHeaders = {
   Authorization: `Bearer ${SB_KEY}`,
   "Content-Type": "application/json",
 };
+
+const useKeyboard = BUTTON_MODE === "keyboard" || BUTTON_MODE === "both";
+const usePinned = BUTTON_MODE === "pinned" || BUTTON_MODE === "both";
 
 // A: 입력창 아래 버튼
 const REPLY_KEYBOARD = {
@@ -106,11 +112,11 @@ async function getTodayLeads() {
   return res.json();
 }
 
-// 메시지 보내기 (A 방식이면 보고 방에 입력창 버튼 같이 표시)
+// 메시지 보내기 (입력창 버튼 사용 시 보고 방에 같이 표시)
 async function reply(chatId, text, replyTo) {
   const body = { chat_id: chatId, text };
   if (replyTo) body.reply_to_message_id = replyTo;
-  if (chatId === REPORT_CHAT && BUTTON_MODE === "keyboard") {
+  if (chatId === REPORT_CHAT && useKeyboard) {
     body.reply_markup = REPLY_KEYBOARD;
   }
   return tg("sendMessage", body);
@@ -194,30 +200,31 @@ async function handleConsult(chatId, msgId) {
 
 // /메뉴
 async function handleMenu(chatId, msgId) {
-  if (BUTTON_MODE === "keyboard") {
+  // 입력창 버튼: 켜거나 끄기
+  if (useKeyboard) {
     await reply(chatId, "아래 버튼으로 보고를 확인하세요.", msgId);
-    return;
+  } else {
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: "입력창 버튼을 정리했습니다.",
+      reply_markup: { remove_keyboard: true },
+    });
   }
 
-  // 예전 입력창 버튼 제거
-  await tg("sendMessage", {
-    chat_id: chatId,
-    text: "버튼을 고정 메뉴로 바꿨습니다.",
-    reply_markup: { remove_keyboard: true },
-  });
-
-  // 고정 메뉴 메시지 보내고 상단에 고정
-  const sent = await tg("sendMessage", {
-    chat_id: chatId,
-    text: "📋 보고 메뉴",
-    reply_markup: INLINE_MENU,
-  });
-  if (sent.ok) {
-    await tg("pinChatMessage", {
+  // 고정 메뉴: 보내고 상단에 고정
+  if (usePinned) {
+    const sent = await tg("sendMessage", {
       chat_id: chatId,
-      message_id: sent.result.message_id,
-      disable_notification: true,
+      text: "📋 보고 메뉴",
+      reply_markup: INLINE_MENU,
     });
+    if (sent.ok) {
+      await tg("pinChatMessage", {
+        chat_id: chatId,
+        message_id: sent.result.message_id,
+        disable_notification: true,
+      });
+    }
   }
 }
 
@@ -276,7 +283,7 @@ exports.handler = async (event) => {
     return { statusCode: 200, body: "OK" };
   }
 
-  // 버튼 클릭
+  // 고정 메뉴 버튼 클릭
   if (update.callback_query) {
     await handleButton(update.callback_query);
     return { statusCode: 200, body: "OK" };
