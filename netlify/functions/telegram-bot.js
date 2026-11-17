@@ -53,6 +53,11 @@ async function tg(method, body) {
   return res.json();
 }
 
+// 굵게 표시(HTML)용: 시트에 입력한 글자 안전하게 바꾸기
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 // ===== 날짜 =====
 
 // 한국시간 현재
@@ -179,11 +184,11 @@ async function getLeads(date) {
   return res.json();
 }
 
-// 정산 시트에서 해당 날짜 데이터
-async function getSettleRows(date) {
+// 정산 시트에서 기간 데이터 (from ~ to)
+async function getSettleRows(from, to) {
   const url =
     `${process.env.SETTLE_URL}?key=${encodeURIComponent(process.env.SETTLE_KEY)}` +
-    `&date=${date}`;
+    `&from=${from}&to=${to}`;
   const res = await fetch(url, { redirect: "follow" });
   const json = await res.json();
   if (json.error) throw new Error("정산 시트: " + json.error);
@@ -202,8 +207,10 @@ async function getManPerTr() {
 // 메시지 보내기
 // - 보고 방: 답장 형태 없이 일반 메시지로
 // - 입력창 버튼은 withKeyboard일 때만(/메뉴) 붙임
-async function reply(chatId, text, replyTo, withKeyboard) {
+// - html이 true면 굵게 표시 가능
+async function reply(chatId, text, replyTo, withKeyboard, html) {
   const body = { chat_id: chatId, text };
+  if (html) body.parse_mode = "HTML";
   if (replyTo && chatId !== REPORT_CHAT) body.reply_to_message_id = replyTo;
   if (withKeyboard && chatId === REPORT_CHAT && useKeyboard) {
     body.reply_markup = REPLY_KEYBOARD;
@@ -289,20 +296,19 @@ async function handleConsult(chatId, msgId, date) {
   await reply(chatId, text, msgId);
 }
 
-// 🧾 정산 보고
+// 🧾 정산 보고 (간단 버전 + 이번 달 누적)
 async function handleSettle(chatId, msgId, date) {
-  const label = `* ${shortLabel(date)}`;
+  const monthStart = date.slice(0, 8) + "01";
+  const monthNum = Number(date.slice(5, 7));
 
-  const rows = await getSettleRows(date);
-  if (!rows.length) {
-    await reply(chatId, `${label}\n\n입력된 정산이 없습니다.`, msgId);
-    return;
-  }
+  // 이번 달 1일 ~ 보고 날짜까지 한 번에 가져오기
+  const all = await getSettleRows(monthStart, date);
+  const rows = all.filter((r) => r.date === date);
 
   // tr이 있을 때만 환율 조회
   let manPerTr = null;
   let rateError = "";
-  if (rows.some((r) => r.unit === "tr")) {
+  if (all.some((r) => r.unit === "tr")) {
     try {
       manPerTr = await getManPerTr();
     } catch (e) {
@@ -310,45 +316,59 @@ async function handleSettle(chatId, msgId, date) {
     }
   }
 
-  // 한 줄 금액 표시 + 만원 환산값
-  const amountOf = (r) => {
+  // 만원 환산 (환율 실패한 tr은 0)
+  const toMan = (r) => {
+    if (r.unit === "tr") return manPerTr === null ? 0 : r.amount * manPerTr;
+    return r.amount;
+  };
+
+  // 한 줄 금액 표시
+  const amountText = (r) => {
     if (r.unit === "tr") {
-      if (manPerTr === null) return { text: `${r.amount}tr`, man: 0 };
-      const m = r.amount * manPerTr;
-      return { text: `${r.amount}tr (약 ${man(m)})`, man: m };
+      return manPerTr === null ? `${r.amount}tr` : `${r.amount}tr (${man(toMan(r))})`;
     }
-    return { text: man(r.amount), man: r.amount };
+    return man(r.amount);
   };
 
-  const lineOf = (r) => {
-    const a = amountOf(r);
-    let t = r.item;
-    if (r.name) t += ` (${r.name})`;
-    if (r.note) t += ` ${r.note}`;
-    return { text: `${t} - ${a.text}`, man: a.man };
+  const lineText = (r) => {
+    let t = esc(r.item);
+    if (r.name) t += ` (${esc(r.name)})`;
+    if (r.note) t += ` ${esc(r.note)}`;
+    return `${t} ${amountText(r)}`;
   };
 
-  const income = rows.filter((r) => r.type === "수입").map(lineOf);
-  const expense = rows.filter((r) => r.type === "지출").map(lineOf);
+  const income = rows.filter((r) => r.type === "수입");
+  const expense = rows.filter((r) => r.type === "지출");
 
-  const incomeTotal = income.reduce((s, l) => s + l.man, 0);
-  const expenseTotal = expense.reduce((s, l) => s + l.man, 0);
+  const incomeTotal = income.reduce((s, r) => s + toMan(r), 0);
+  const expenseTotal = expense.reduce((s, r) => s + toMan(r), 0);
 
-  let text = `${label}\n\n수입\n\n`;
-  text += income.length
-    ? income.map((l, i) => `${i + 1}. ${l.text}`).join("\n")
-    : "없음";
-  text += `\n\n수입 총 ${man(incomeTotal)}\n\n지출\n\n`;
-  text += expense.length ? expense.map((l) => l.text).join("\n") : "없음";
-  text += `\n\n지출 총 ${man(expenseTotal)}\n\n총 ${man(incomeTotal - expenseTotal)}`;
+  // 이번 달 누적 수익
+  const monthProfit = all.reduce((s, r) => {
+    if (r.type === "수입") return s + toMan(r);
+    if (r.type === "지출") return s - toMan(r);
+    return s;
+  }, 0);
 
-  if (manPerTr !== null) {
-    text += `\n\n(환율 1tr ≈ ${manPerTr.toFixed(1)}만원, 현재 환율 기준)`;
-  } else if (rateError) {
-    text += `\n\n⚠️ ${rateError} — tr 금액은 합계에서 빠졌습니다.`;
+  let text = `* ${shortLabel(date)}\n\n`;
+
+  if (!rows.length) {
+    text += `입력된 정산이 없습니다.`;
+  } else {
+    text += `[수입] ${man(incomeTotal)}\n`;
+    text += income.map((r, i) => `${i + 1}. ${lineText(r)}`).join("\n");
+    text += `\n\n[지출] ${man(expenseTotal)}\n`;
+    text += expense.map((r) => lineText(r)).join("\n");
+    text += `\n\n<b>오늘 수익 ${man(incomeTotal - expenseTotal)}</b>`;
   }
 
-  await reply(chatId, text, msgId);
+  text += `\n\n<b>${monthNum}월 누적 ${man(monthProfit)}</b>`;
+
+  if (rateError) {
+    text += `\n\n⚠️ ${esc(rateError)} — tr 금액은 합계에서 빠졌습니다.`;
+  }
+
+  await reply(chatId, text, msgId, false, true);
 }
 
 // /메뉴
