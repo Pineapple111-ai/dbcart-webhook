@@ -1,4 +1,4 @@
-// 디비 (가전공구 LG) 그룹 알림용
+// 디비 (가전공구) 그룹 알림용 — LG / 삼성 공용
 const CHAT_ID = "-5235472796";
 
 function formatApplyTime(date, time) {
@@ -21,6 +21,31 @@ function formatApplyTime(date, time) {
   return `${y}. ${m}. ${d} ${ampm} ${h12}:${String(mm).padStart(2, "0")}`;
 }
 
+// Supabase에 디비 1건 기록 (/보고 집계용)
+async function saveLead(row) {
+  try {
+    const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/gajeon_leads`, {
+      method: "POST",
+      headers: {
+        apikey: process.env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify(row),
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      console.error("Supabase rejected:", t);
+      return "supabase error: " + t;
+    }
+    return "saved";
+  } catch (err) {
+    console.error("Supabase error:", err);
+    return "supabase fetch error: " + err.message;
+  }
+}
+
 exports.handler = async (event) => {
   let params = { ...(event.queryStringParameters || {}) };
 
@@ -35,6 +60,7 @@ exports.handler = async (event) => {
     }
   }
 
+  const debug = params.debug === "1";
   const brand = params.brand || "LG";
   const name = params.name || "-";
   const phone = params.phone || "-";
@@ -52,8 +78,10 @@ exports.handler = async (event) => {
     `패키지 옵션: ${option}\n` +
     `신청시각: ${applyTime}`;
 
+  let result = "";
+  let messageId = null;
   try {
-    await fetch(
+    const res = await fetch(
       `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
       {
         method: "POST",
@@ -61,8 +89,33 @@ exports.handler = async (event) => {
         body: JSON.stringify({ chat_id: CHAT_ID, text }),
       }
     );
+    result = await res.text();
+    if (!res.ok) {
+      console.error("Telegram rejected:", result);
+    } else {
+      try {
+        messageId = JSON.parse(result).result.message_id;
+      } catch {}
+    }
   } catch (err) {
+    result = "fetch error: " + err.message;
     console.error("Telegram error:", err);
+  }
+
+  const saved = await saveLead({
+    brand,
+    name,
+    phone,
+    option: option === "-" ? null : option,
+    tg_message_id: messageId,
+  });
+
+  if (debug) {
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+      body: `telegram: ${result}\n\ndb: ${saved}`,
+    };
   }
 
   return { statusCode: 200, body: "OK" };
