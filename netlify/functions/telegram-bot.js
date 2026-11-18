@@ -1,5 +1,5 @@
 // 디비알림봇 명령어 처리
-// - 보고 방: /광고(여성대출+가전공구+합계, 기간 가능), /상담, /정산 (+ 날짜), /메뉴 (+ 버튼)
+// - 보고 방: /광고(여성대출+가전공구+합계+카드한도, 기간 가능), /상담, /정산 (+ 날짜), /잔액, /메뉴 (+ 버튼)
 // - 디비 (여성대출) 방: /삭제, /보고 (기간 가능)
 // - 디비 (가전공구) 방: /삭제, /보고 (기간 가능)
 const LEAD_CHAT = "-5318830146";   // 디비 (여성대출) 방
@@ -15,6 +15,7 @@ const BUTTON_MODE = "both";
 const BTN_ADS = "📊 광고";
 const BTN_CONSULT = "💬 상담";
 const BTN_SETTLE = "🧾 정산";
+const BTN_CARD = "💳 잔액";
 
 // 여성대출 광고비를 합산할 광고계정 (환경변수가 없는 계정은 건너뜀)
 const AD_ACCOUNTS = [
@@ -27,6 +28,9 @@ const AD_ACCOUNTS = [
 const GAJEON_ACCOUNTS = [
   { label: "최저가공구", id: process.env.META_ACCOUNT_GAJEON, token: process.env.META_TOKEN_A },
 ];
+
+// 카드 한도 며칠치 계산에 쓰는 평균 기간 (어제까지 N일)
+const CARD_AVG_DAYS = 3;
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -43,18 +47,26 @@ const usePinned = BUTTON_MODE === "pinned" || BUTTON_MODE === "both";
 
 // A: 입력창 아래 버튼
 const REPLY_KEYBOARD = {
-  keyboard: [[{ text: BTN_ADS }, { text: BTN_CONSULT }, { text: BTN_SETTLE }]],
+  keyboard: [
+    [{ text: BTN_ADS }, { text: BTN_CONSULT }],
+    [{ text: BTN_SETTLE }, { text: BTN_CARD }],
+  ],
   resize_keyboard: true,
   is_persistent: true,
 };
 
 // B: 메시지에 붙는 버튼
 const INLINE_MENU = {
-  inline_keyboard: [[
-    { text: BTN_ADS, callback_data: "ads" },
-    { text: BTN_CONSULT, callback_data: "consult" },
-    { text: BTN_SETTLE, callback_data: "settle" },
-  ]],
+  inline_keyboard: [
+    [
+      { text: BTN_ADS, callback_data: "ads" },
+      { text: BTN_CONSULT, callback_data: "consult" },
+    ],
+    [
+      { text: BTN_SETTLE, callback_data: "settle" },
+      { text: BTN_CARD, callback_data: "card" },
+    ],
+  ],
 };
 
 // 텔레그램 API 호출
@@ -194,6 +206,22 @@ function man(n) {
   return `${Math.round(n).toLocaleString("ko-KR")}만원`;
 }
 
+// 동 → "5.9tr"
+function trText(vnd) {
+  return (vnd / 1000000).toFixed(1).replace(/\.0$/, "") + "tr";
+}
+
+// 동 → "5,907,025 VND"
+function vndText(vnd) {
+  return Math.round(vnd).toLocaleString("en-US") + " VND";
+}
+
+// "18/11/2026 19:05:08" → "11/18 19:05"
+function cardTimeLabel(t) {
+  const m = String(t || "").match(/(\d{2})\/(\d{2})\/\d{4}\s+(\d{2}:\d{2})/);
+  return m ? `${Number(m[2])}/${Number(m[1])} ${m[3]}` : "";
+}
+
 // ===== 데이터 조회 =====
 
 // 메타 광고계정 지출 (기간 합계)
@@ -259,6 +287,24 @@ async function getManPerTr() {
   return (krwPerVnd * 1000000) / 10000;
 }
 
+// 1원이 몇 동인지
+async function getVndPerKrw() {
+  const res = await fetch("https://open.er-api.com/v6/latest/KRW");
+  const json = await res.json();
+  const v = json && json.rates && json.rates.VND;
+  if (!v) throw new Error("환율 조회 실패");
+  return v;
+}
+
+// 카드 남은 한도 (메일 기준)
+async function getCard() {
+  const url = `${process.env.CARD_URL}?key=${encodeURIComponent(process.env.CARD_KEY)}`;
+  const res = await fetch(url, { redirect: "follow" });
+  const json = await res.json();
+  if (json.error) throw new Error(json.error);
+  return json;
+}
+
 // 메시지 보내기
 // - 보고 방: 답장 형태 없이 일반 메시지로
 // - 입력창 버튼은 withKeyboard일 때만(/메뉴) 붙임
@@ -295,7 +341,7 @@ async function calcAds(from, to, accounts, table) {
     else spend += r.spend;
   });
 
-  const count = await getLeadCount(from, to, table);
+  const count = table ? await getLeadCount(from, to, table) : 0;
   return { spend, count, errors };
 }
 
@@ -307,6 +353,34 @@ function adsLines(r) {
     `총 유입 디비개수 : ${r.count}개\n` +
     `디비 개당 단가 : ${cpl}`
   );
+}
+
+// 💳 카드 한도 블록 (남은 한도 + 며칠치)
+async function cardBlock() {
+  try {
+    const today = kstToday();
+    const from = addDays(today, -CARD_AVG_DAYS);
+    const to = addDays(today, -1);
+
+    const [card, vndPerKrw, avg] = await Promise.all([
+      getCard(),
+      getVndPerKrw().catch(() => null),
+      calcAds(from, to, [...AD_ACCOUNTS, ...GAJEON_ACCOUNTS], null),
+    ]);
+
+    let text = `${trText(card.limit)} (${vndText(card.limit)})`;
+
+    const dailyKrw = avg.spend / CARD_AVG_DAYS;
+    let days = "";
+    if (vndPerKrw && dailyKrw > 0) {
+      const d = card.limit / (dailyKrw * vndPerKrw);
+      days = `약 ${d.toFixed(1)}일치 · `;
+    }
+    text += `\n${days}${cardTimeLabel(card.time)} 기준`;
+    return text;
+  } catch (e) {
+    return `⚠️ 카드 한도 조회 실패: ${e.message}`;
+  }
 }
 
 // 📊 여성대출 광고 보고 (디비 (여성대출) 방 /보고)
@@ -325,11 +399,12 @@ async function handleGajeonAds(chatId, msgId, from, to) {
   await reply(chatId, text, msgId);
 }
 
-// 📊 전체 광고 보고 (보고 방: 여성대출 + 가전공구 + 광고비 합계)
+// 📊 전체 광고 보고 (보고 방: 여성대출 + 가전공구 + 광고비 합계 + 카드 한도)
 async function handleAllAds(chatId, msgId, from, to) {
-  const [loan, gajeon] = await Promise.all([
+  const [loan, gajeon, card] = await Promise.all([
     calcAds(from, to, AD_ACCOUNTS, "report_leads"),
     calcAds(from, to, GAJEON_ACCOUNTS, "gajeon_leads"),
+    cardBlock(),
   ]);
   const errors = [...loan.errors, ...gajeon.errors];
 
@@ -337,10 +412,17 @@ async function handleAllAds(chatId, msgId, from, to) {
     `📊 광고 보고 (${rangeSuffix(from, to)})\n\n` +
     `[여성대출]\n${adsLines(loan)}\n\n` +
     `[가전공구]\n${adsLines(gajeon)}\n\n` +
-    `[전체 합계]\n총 지출 광고비 : ${won(loan.spend + gajeon.spend)}`;
+    `[전체 합계]\n총 지출 광고비 : ${won(loan.spend + gajeon.spend)}\n\n` +
+    `[카드 남은 한도]\n${card}`;
 
   if (errors.length) text += `\n\n⚠️ ${errors.join("\n⚠️ ")}`;
   await reply(chatId, text, msgId);
+}
+
+// 💳 /잔액
+async function handleCard(chatId, msgId) {
+  const card = await cardBlock();
+  await reply(chatId, `💳 카드 남은 한도\n\n${card}`, msgId);
 }
 
 // 💬 상담 보고
@@ -470,7 +552,8 @@ async function handleMenu(chatId, msgId) {
       chatId,
       "아래 버튼으로 보고를 확인하세요.\n" +
         "날짜별 보기: /정산 11/13, /상담 어제\n" +
-        "기간 광고비: /광고 3일, /광고 11/16~11/18, /광고 이번달",
+        "기간 광고비: /광고 3일, /광고 11/16~11/18, /광고 이번달\n" +
+        "카드 한도: /잔액",
       msgId,
       true
     );
@@ -536,6 +619,7 @@ async function handleButton(cq) {
     if (cq.data === "ads") await handleAllAds(chatId, null, today, today);
     else if (cq.data === "consult") await handleConsult(chatId, null, today);
     else if (cq.data === "settle") await handleSettle(chatId, null, today);
+    else if (cq.data === "card") await handleCard(chatId, null);
   } catch (err) {
     console.error("button error:", err);
     await reply(chatId, "⚠️ 처리 중 오류: " + err.message);
@@ -605,9 +689,11 @@ exports.handler = async (event) => {
       if (text.startsWith("/광고")) await runAdsReport(chatId, id, handleAllAds, arg);
       else if (text.startsWith("/상담")) await runReport(chatId, id, handleConsult, arg);
       else if (text.startsWith("/정산")) await runReport(chatId, id, handleSettle, arg);
+      else if (text.startsWith("/잔액")) await handleCard(chatId, id);
       else if (text === BTN_ADS) await handleAllAds(chatId, id, today, today);
       else if (text === BTN_CONSULT) await handleConsult(chatId, id, today);
       else if (text === BTN_SETTLE) await handleSettle(chatId, id, today);
+      else if (text === BTN_CARD) await handleCard(chatId, id);
       else if (text.startsWith("/메뉴") || text.startsWith("/start")) await handleMenu(chatId, id);
     } else if (chatId === GAJEON_CHAT) {
       if (text.startsWith("/보고")) await runAdsReport(chatId, id, handleGajeonAds, arg);
