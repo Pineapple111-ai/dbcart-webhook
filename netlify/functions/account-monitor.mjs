@@ -13,9 +13,11 @@ const sbHeaders = {
   "Content-Type": "application/json",
 };
 
+// 감시할 광고계정 (환경변수가 없는 계정은 건너뜀)
 const ACCOUNTS = [
   { key: "A", id: process.env.META_ACCOUNT_A, token: process.env.META_TOKEN_A },
   { key: "B", id: process.env.META_ACCOUNT_B, token: process.env.META_TOKEN_B },
+  { key: "C", id: process.env.META_ACCOUNT_C, token: process.env.META_TOKEN_C },
 ];
 
 const STATUS_LABEL = {
@@ -162,6 +164,7 @@ async function runAccount(acc) {
 
 export default async () => {
   for (const acc of ACCOUNTS) {
+    if (!acc.id || !acc.token) continue;
     try {
       await runAccount(acc);
     } catch (e) {
