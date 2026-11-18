@@ -1,8 +1,10 @@
 // 디비알림봇 명령어 처리
 // - 보고 방: /광고, /상담, /정산 (+ 날짜), /메뉴 (+ 버튼)
 // - 디비 (여성대출) 방: /삭제, /보고
+// - 디비 (가전공구) 방: /삭제, /보고
 const LEAD_CHAT = "-5318830146";   // 디비 (여성대출) 방
 const REPORT_CHAT = "-5391256412"; // 보고 방
+const GAJEON_CHAT = "-5235472796"; // 디비 (가전공구) 방
 
 // 버튼 방식
 // "both"     = 입력창 아래 버튼(A) + 고정 메시지 버튼(B)
@@ -14,11 +16,16 @@ const BTN_ADS = "📊 광고";
 const BTN_CONSULT = "💬 상담";
 const BTN_SETTLE = "🧾 정산";
 
-// 광고비를 합산할 메타 광고계정 (환경변수가 없는 계정은 건너뜀)
+// 여성대출 광고비를 합산할 광고계정 (환경변수가 없는 계정은 건너뜀)
 const AD_ACCOUNTS = [
   { label: "계정A", id: process.env.META_ACCOUNT_A, token: process.env.META_TOKEN_A },
   { label: "계정B", id: process.env.META_ACCOUNT_B, token: process.env.META_TOKEN_B },
   { label: "계정C", id: process.env.META_ACCOUNT_C, token: process.env.META_TOKEN_C },
+];
+
+// 가전공구 광고계정 (계정 A와 같은 비즈니스 관리자 → A 토큰 사용)
+const GAJEON_ACCOUNTS = [
+  { label: "최저가공구", id: process.env.META_ACCOUNT_GAJEON, token: process.env.META_TOKEN_A },
 ];
 
 const SB_URL = process.env.SUPABASE_URL;
@@ -171,9 +178,9 @@ function leadDateFilter(date) {
   return `deleted=eq.false&created_at=gte.${start}&created_at=lt.${end}`;
 }
 
-// 해당 날짜 디비 개수
-async function getLeadCount(date) {
-  const url = `${SB_URL}/rest/v1/report_leads?select=id&${leadDateFilter(date)}`;
+// 해당 날짜 디비 개수 (table: report_leads 또는 gajeon_leads)
+async function getLeadCount(date, table) {
+  const url = `${SB_URL}/rest/v1/${table}?select=id&${leadDateFilter(date)}`;
   const res = await fetch(url, {
     headers: { ...sbHeaders, Prefer: "count=exact", Range: "0-0" },
   });
@@ -181,7 +188,7 @@ async function getLeadCount(date) {
   return Number(range.split("/")[1] || 0);
 }
 
-// 해당 날짜 디비 상태 목록
+// 해당 날짜 디비 상태 목록 (여성대출)
 async function getLeads(date) {
   const url =
     `${SB_URL}/rest/v1/report_leads` +
@@ -227,13 +234,13 @@ async function reply(chatId, text, replyTo, withKeyboard, html) {
 
 // ===== 보고 =====
 
-// 📊 광고 보고 (광고계정 A·B·C 합계)
-async function handleAds(chatId, msgId, date) {
+// 광고 보고 공통 (광고계정 목록 + 디비 테이블)
+async function adsReport(chatId, msgId, date, accounts, table, title) {
   let total = 0;
   const errors = [];
 
   const results = await Promise.all(
-    AD_ACCOUNTS.filter((a) => a.id && a.token).map(async (a) => {
+    accounts.filter((a) => a.id && a.token).map(async (a) => {
       try {
         return { a, spend: await getSpend(a.id, a.token, date) };
       } catch (e) {
@@ -247,11 +254,11 @@ async function handleAds(chatId, msgId, date) {
     else total += r.spend;
   });
 
-  const count = await getLeadCount(date);
+  const count = await getLeadCount(date, table);
   const cpl = count > 0 ? won(total / count) : "-";
 
   let text =
-    `📊 광고 보고 (${titleSuffix(date)})\n\n` +
+    `📊 ${title} (${titleSuffix(date)})\n\n` +
     `총 지출 광고비 : ${won(total)}\n` +
     `총 유입 디비개수 : ${count}개\n` +
     `디비 개당 단가 : ${cpl}`;
@@ -259,6 +266,16 @@ async function handleAds(chatId, msgId, date) {
   if (errors.length) text += `\n\n⚠️ ${errors.join("\n⚠️ ")}`;
 
   await reply(chatId, text, msgId);
+}
+
+// 📊 여성대출 광고 보고 (광고계정 A·B·C 합계)
+async function handleAds(chatId, msgId, date) {
+  await adsReport(chatId, msgId, date, AD_ACCOUNTS, "report_leads", "광고 보고");
+}
+
+// 📊 가전공구 광고 보고
+async function handleGajeonAds(chatId, msgId, date) {
+  await adsReport(chatId, msgId, date, GAJEON_ACCOUNTS, "gajeon_leads", "가전공구 광고 보고");
 }
 
 // 💬 상담 보고
@@ -410,8 +427,8 @@ async function handleMenu(chatId, msgId) {
   }
 }
 
-// /삭제 (디비 알림 메시지에 답장)
-async function handleDelete(chatId, msg) {
+// /삭제 (디비 알림 메시지에 답장) — table: report_leads 또는 gajeon_leads
+async function handleDelete(chatId, msg, table) {
   const target = msg.reply_to_message;
   if (!target) {
     await reply(chatId, "삭제할 디비 알림 메시지에 답장으로 /삭제 를 입력해주세요.", msg.message_id);
@@ -419,7 +436,7 @@ async function handleDelete(chatId, msg) {
   }
 
   const res = await fetch(
-    `${SB_URL}/rest/v1/report_leads?tg_message_id=eq.${target.message_id}`,
+    `${SB_URL}/rest/v1/${table}?tg_message_id=eq.${target.message_id}`,
     {
       method: "PATCH",
       headers: { ...sbHeaders, Prefer: "return=representation" },
@@ -487,7 +504,7 @@ exports.handler = async (event) => {
   if (!msg || !msg.text) return { statusCode: 200, body: "OK" };
 
   const chatId = String(msg.chat.id);
-  if (chatId !== LEAD_CHAT && chatId !== REPORT_CHAT) {
+  if (chatId !== LEAD_CHAT && chatId !== REPORT_CHAT && chatId !== GAJEON_CHAT) {
     return { statusCode: 200, body: "OK" };
   }
 
@@ -505,9 +522,12 @@ exports.handler = async (event) => {
       else if (text === BTN_CONSULT) await handleConsult(chatId, id, kstToday());
       else if (text === BTN_SETTLE) await handleSettle(chatId, id, kstToday());
       else if (text.startsWith("/메뉴") || text.startsWith("/start")) await handleMenu(chatId, id);
+    } else if (chatId === GAJEON_CHAT) {
+      if (text.startsWith("/보고")) await runReport(chatId, id, handleGajeonAds, arg);
+      else if (text.startsWith("/삭제")) await handleDelete(chatId, msg, "gajeon_leads");
     } else {
       if (text.startsWith("/보고")) await runReport(chatId, id, handleAds, arg);
-      else if (text.startsWith("/삭제")) await handleDelete(chatId, msg);
+      else if (text.startsWith("/삭제")) await handleDelete(chatId, msg, "report_leads");
     }
   } catch (err) {
     console.error("bot error:", err);
