@@ -14,6 +14,13 @@ const BTN_ADS = "📊 광고";
 const BTN_CONSULT = "💬 상담";
 const BTN_SETTLE = "🧾 정산";
 
+// 광고비를 합산할 메타 광고계정 (환경변수가 없는 계정은 건너뜀)
+const AD_ACCOUNTS = [
+  { label: "계정A", id: process.env.META_ACCOUNT_A, token: process.env.META_TOKEN_A },
+  { label: "계정B", id: process.env.META_ACCOUNT_B, token: process.env.META_TOKEN_B },
+  { label: "계정C", id: process.env.META_ACCOUNT_C, token: process.env.META_TOKEN_C },
+];
+
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_KEY;
 const BOT = process.env.TELEGRAM_BOT_TOKEN;
@@ -220,24 +227,26 @@ async function reply(chatId, text, replyTo, withKeyboard, html) {
 
 // ===== 보고 =====
 
-// 📊 광고 보고
+// 📊 광고 보고 (광고계정 A·B·C 합계)
 async function handleAds(chatId, msgId, date) {
-  let spendA = 0;
-  let spendB = 0;
+  let total = 0;
   const errors = [];
 
-  try {
-    spendA = await getSpend(process.env.META_ACCOUNT_A, process.env.META_TOKEN_A, date);
-  } catch (e) {
-    errors.push("계정A 조회 실패: " + e.message);
-  }
-  try {
-    spendB = await getSpend(process.env.META_ACCOUNT_B, process.env.META_TOKEN_B, date);
-  } catch (e) {
-    errors.push("계정B 조회 실패: " + e.message);
-  }
+  const results = await Promise.all(
+    AD_ACCOUNTS.filter((a) => a.id && a.token).map(async (a) => {
+      try {
+        return { a, spend: await getSpend(a.id, a.token, date) };
+      } catch (e) {
+        return { a, error: e.message };
+      }
+    })
+  );
 
-  const total = spendA + spendB;
+  results.forEach((r) => {
+    if (r.error) errors.push(`${r.a.label} 조회 실패: ${r.error}`);
+    else total += r.spend;
+  });
+
   const count = await getLeadCount(date);
   const cpl = count > 0 ? won(total / count) : "-";
 
