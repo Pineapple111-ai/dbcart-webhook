@@ -1,5 +1,5 @@
 // 디비알림봇 명령어 처리
-// - 보고 방: /광고, /상담, /정산 (+ 날짜), /메뉴 (+ 버튼)
+// - 보고 방: /광고(여성대출+가전공구+합계), /상담, /정산 (+ 날짜), /메뉴 (+ 버튼)
 // - 디비 (여성대출) 방: /삭제, /보고
 // - 디비 (가전공구) 방: /삭제, /보고
 const LEAD_CHAT = "-5318830146";   // 디비 (여성대출) 방
@@ -234,9 +234,9 @@ async function reply(chatId, text, replyTo, withKeyboard, html) {
 
 // ===== 보고 =====
 
-// 광고 보고 공통 (광고계정 목록 + 디비 테이블)
-async function adsReport(chatId, msgId, date, accounts, table, title) {
-  let total = 0;
+// 광고비·디비 수 계산 (광고계정 목록 + 디비 테이블)
+async function calcAds(date, accounts, table) {
+  let spend = 0;
   const errors = [];
 
   const results = await Promise.all(
@@ -251,31 +251,55 @@ async function adsReport(chatId, msgId, date, accounts, table, title) {
 
   results.forEach((r) => {
     if (r.error) errors.push(`${r.a.label} 조회 실패: ${r.error}`);
-    else total += r.spend;
+    else spend += r.spend;
   });
 
   const count = await getLeadCount(date, table);
-  const cpl = count > 0 ? won(total / count) : "-";
+  return { spend, count, errors };
+}
 
-  let text =
-    `📊 ${title} (${titleSuffix(date)})\n\n` +
-    `총 지출 광고비 : ${won(total)}\n` +
-    `총 유입 디비개수 : ${count}개\n` +
-    `디비 개당 단가 : ${cpl}`;
+// 광고비·디비 수·단가 3줄
+function adsLines(r) {
+  const cpl = r.count > 0 ? won(r.spend / r.count) : "-";
+  return (
+    `총 지출 광고비 : ${won(r.spend)}\n` +
+    `총 유입 디비개수 : ${r.count}개\n` +
+    `디비 개당 단가 : ${cpl}`
+  );
+}
 
-  if (errors.length) text += `\n\n⚠️ ${errors.join("\n⚠️ ")}`;
-
+// 📊 여성대출 광고 보고 (디비 (여성대출) 방 /보고)
+async function handleAds(chatId, msgId, date) {
+  const r = await calcAds(date, AD_ACCOUNTS, "report_leads");
+  let text = `📊 광고 보고 (${titleSuffix(date)})\n\n${adsLines(r)}`;
+  if (r.errors.length) text += `\n\n⚠️ ${r.errors.join("\n⚠️ ")}`;
   await reply(chatId, text, msgId);
 }
 
-// 📊 여성대출 광고 보고 (광고계정 A·B·C 합계)
-async function handleAds(chatId, msgId, date) {
-  await adsReport(chatId, msgId, date, AD_ACCOUNTS, "report_leads", "광고 보고");
+// 📊 가전공구 광고 보고 (디비 (가전공구) 방 /보고)
+async function handleGajeonAds(chatId, msgId, date) {
+  const r = await calcAds(date, GAJEON_ACCOUNTS, "gajeon_leads");
+  let text = `📊 가전공구 광고 보고 (${titleSuffix(date)})\n\n${adsLines(r)}`;
+  if (r.errors.length) text += `\n\n⚠️ ${r.errors.join("\n⚠️ ")}`;
+  await reply(chatId, text, msgId);
 }
 
-// 📊 가전공구 광고 보고
-async function handleGajeonAds(chatId, msgId, date) {
-  await adsReport(chatId, msgId, date, GAJEON_ACCOUNTS, "gajeon_leads", "가전공구 광고 보고");
+// 📊 전체 광고 보고 (보고 방: 여성대출 + 가전공구 + 광고비 합계)
+async function handleAllAds(chatId, msgId, date) {
+  const [loan, gajeon] = await Promise.all([
+    calcAds(date, AD_ACCOUNTS, "report_leads"),
+    calcAds(date, GAJEON_ACCOUNTS, "gajeon_leads"),
+  ]);
+  const errors = [...loan.errors, ...gajeon.errors];
+
+  let text =
+    `📊 광고 보고 (${titleSuffix(date)})\n\n` +
+    `[여성대출]\n${adsLines(loan)}\n\n` +
+    `[가전공구]\n${adsLines(gajeon)}\n\n` +
+    `[전체 합계]\n총 지출 광고비 : ${won(loan.spend + gajeon.spend)}`;
+
+  if (errors.length) text += `\n\n⚠️ ${errors.join("\n⚠️ ")}`;
+  await reply(chatId, text, msgId);
 }
 
 // 💬 상담 보고
@@ -461,7 +485,7 @@ async function handleButton(cq) {
 
   const today = kstToday();
   try {
-    if (cq.data === "ads") await handleAds(chatId, null, today);
+    if (cq.data === "ads") await handleAllAds(chatId, null, today);
     else if (cq.data === "consult") await handleConsult(chatId, null, today);
     else if (cq.data === "settle") await handleSettle(chatId, null, today);
   } catch (err) {
@@ -515,10 +539,10 @@ exports.handler = async (event) => {
 
   try {
     if (chatId === REPORT_CHAT) {
-      if (text.startsWith("/광고")) await runReport(chatId, id, handleAds, arg);
+      if (text.startsWith("/광고")) await runReport(chatId, id, handleAllAds, arg);
       else if (text.startsWith("/상담")) await runReport(chatId, id, handleConsult, arg);
       else if (text.startsWith("/정산")) await runReport(chatId, id, handleSettle, arg);
-      else if (text === BTN_ADS) await handleAds(chatId, id, kstToday());
+      else if (text === BTN_ADS) await handleAllAds(chatId, id, kstToday());
       else if (text === BTN_CONSULT) await handleConsult(chatId, id, kstToday());
       else if (text === BTN_SETTLE) await handleSettle(chatId, id, kstToday());
       else if (text.startsWith("/메뉴") || text.startsWith("/start")) await handleMenu(chatId, id);
