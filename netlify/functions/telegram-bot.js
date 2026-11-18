@@ -531,7 +531,7 @@ async function handleSettle(chatId, msgId, date) {
     text += `[수입] ${man(incomeTotal)}\n`;
     text += income.map((r, i) => `${i + 1}. ${lineText(r)}`).join("\n");
     text += `\n\n[지출] ${man(expenseTotal)}\n`;
-    text += expense.map((r) => lineText(r)).join("\n");
+    text += expense.map((r, i) => `${i + 1}. ${lineText(r)}`).join("\n");
     text += `\n\n<b>오늘 수익 ${man(incomeTotal - expenseTotal)}</b>`;
   }
 
