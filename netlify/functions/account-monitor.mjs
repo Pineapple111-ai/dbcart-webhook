@@ -1,6 +1,7 @@
 // 광고계정 감시: 계정 상태 이상 + 광고 켜짐 상태에서 지출 멈춤 감지
 // 15분마다 자동 실행, 상태가 바뀔 때만 텔레그램 알림
-const CHAT_ID = "-5318830146";
+const LOAN_CHAT = "-5318830146";   // 디비 (여성대출) 방
+const GAJEON_CHAT = "-5235472796"; // 디비 (가전공구) 방
 const STALL_MINUTES = 60; // 지출 멈춤 판단 기준 (분)
 
 const SB_URL = process.env.SUPABASE_URL;
@@ -13,11 +14,12 @@ const sbHeaders = {
   "Content-Type": "application/json",
 };
 
-// 감시할 광고계정 (환경변수가 없는 계정은 건너뜀)
+// 감시할 광고계정 + 알림 받을 방 (환경변수가 없는 계정은 건너뜀)
 const ACCOUNTS = [
-  { key: "A", id: process.env.META_ACCOUNT_A, token: process.env.META_TOKEN_A },
-  { key: "B", id: process.env.META_ACCOUNT_B, token: process.env.META_TOKEN_B },
-  { key: "C", id: process.env.META_ACCOUNT_C, token: process.env.META_TOKEN_C },
+  { key: "A", id: process.env.META_ACCOUNT_A, token: process.env.META_TOKEN_A, chat: LOAN_CHAT },
+  { key: "B", id: process.env.META_ACCOUNT_B, token: process.env.META_TOKEN_B, chat: LOAN_CHAT },
+  { key: "C", id: process.env.META_ACCOUNT_C, token: process.env.META_TOKEN_C, chat: LOAN_CHAT },
+  { key: "G", id: process.env.META_ACCOUNT_GAJEON, token: process.env.META_TOKEN_A, chat: GAJEON_CHAT },
 ];
 
 const STATUS_LABEL = {
@@ -88,11 +90,11 @@ async function saveRow(row) {
   });
 }
 
-async function send(text) {
+async function send(chatId, text) {
   await fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: CHAT_ID, text }),
+    body: JSON.stringify({ chat_id: chatId, text }),
   });
 }
 
@@ -125,13 +127,13 @@ async function runAccount(acc) {
   const prevStatus = row ? row.status : "1";
   if (cur.status !== prevStatus) {
     if (cur.status === "1") {
-      await send(`✅ ${label} 계정 정상으로 복구되었습니다.`);
+      await send(acc.chat, `✅ ${label} 계정 정상으로 복구되었습니다.`);
     } else {
       let msg = `🚨 ${label} 광고계정 상태 이상\n\n상태: ${statusText}`;
       if (cur.reason && REASON_LABEL[cur.reason]) msg += `\n사유: ${REASON_LABEL[cur.reason]}`;
       if (cur.error) msg += `\n내용: ${cur.error}`;
       msg += `\n\n광고관리자에서 확인해주세요.`;
-      await send(msg);
+      await send(acc.chat, msg);
     }
   }
 
@@ -142,7 +144,7 @@ async function runAccount(acc) {
     next.spend_alerted = false;
   } else if (cur.spend !== next.last_spend) {
     if (next.spend_alerted) {
-      await send(`✅ ${label} 광고 지출이 다시 시작되었습니다.`);
+      await send(acc.chat, `✅ ${label} 광고 지출이 다시 시작되었습니다.`);
     }
     next.last_spend = cur.spend;
     next.last_change = now.toISOString();
@@ -151,6 +153,7 @@ async function runAccount(acc) {
     const minutes = (now - new Date(next.last_change)) / 60000;
     if (minutes >= STALL_MINUTES && !next.spend_alerted) {
       await send(
+        acc.chat,
         `⚠️ ${label} 광고가 켜져 있는데 ${STALL_MINUTES}분 동안 지출이 없습니다.\n\n` +
           `오늘 지출: ${won(cur.spend)}\n` +
           `결제 수단, 광고 거부, 일 예산 소진 여부를 확인해주세요.`
