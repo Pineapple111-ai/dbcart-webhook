@@ -1,7 +1,7 @@
 // 디비알림봇 명령어 처리
-// - 보고 방: /광고(여성대출+가전공구+합계+카드한도, 기간 가능), /상담, /정산 (+ 날짜), /잔액, /메뉴 (+ 버튼)
+// - 보고 방: /광고(기간 가능), /상담(대출), /상담가전, /정산 (+ 날짜), /잔액, /메뉴 (+ 버튼)
 // - 디비 (여성대출) 방: /삭제, /보고 (기간 가능)
-// - 디비 (가전공구) 방: /삭제, /보고 (기간 가능)
+// - 디비 (가전공구) 방: /삭제, /보고 (기간 가능), /상담 (+ 날짜)
 const LEAD_CHAT = "-5318830146";   // 디비 (여성대출) 방
 const REPORT_CHAT = "-5391256412"; // 보고 방
 const GAJEON_CHAT = "-5235472796"; // 디비 (가전공구) 방
@@ -13,7 +13,8 @@ const GAJEON_CHAT = "-5235472796"; // 디비 (가전공구) 방
 const BUTTON_MODE = "both";
 
 const BTN_ADS = "📊 광고";
-const BTN_CONSULT = "💬 상담";
+const BTN_CONSULT = "💬 상담(대출)";
+const BTN_CONSULT_G = "🛒 상담(가전)";
 const BTN_SETTLE = "🧾 정산";
 const BTN_CARD = "💳 잔액";
 
@@ -48,8 +49,8 @@ const usePinned = BUTTON_MODE === "pinned" || BUTTON_MODE === "both";
 // A: 입력창 아래 버튼
 const REPLY_KEYBOARD = {
   keyboard: [
-    [{ text: BTN_ADS }, { text: BTN_CONSULT }],
-    [{ text: BTN_SETTLE }, { text: BTN_CARD }],
+    [{ text: BTN_ADS }, { text: BTN_SETTLE }, { text: BTN_CARD }],
+    [{ text: BTN_CONSULT }, { text: BTN_CONSULT_G }],
   ],
   resize_keyboard: true,
   is_persistent: true,
@@ -60,11 +61,12 @@ const INLINE_MENU = {
   inline_keyboard: [
     [
       { text: BTN_ADS, callback_data: "ads" },
-      { text: BTN_CONSULT, callback_data: "consult" },
-    ],
-    [
       { text: BTN_SETTLE, callback_data: "settle" },
       { text: BTN_CARD, callback_data: "card" },
+    ],
+    [
+      { text: BTN_CONSULT, callback_data: "consult" },
+      { text: BTN_CONSULT_G, callback_data: "consult_g" },
     ],
   ],
 };
@@ -257,10 +259,10 @@ async function getLeadCount(from, to, table) {
   return Number(range.split("/")[1] || 0);
 }
 
-// 해당 날짜 디비 상태 목록 (여성대출)
-async function getLeads(date) {
+// 해당 날짜 디비 상태 목록 (table: report_leads 또는 gajeon_leads)
+async function getLeads(date, table) {
   const url =
-    `${SB_URL}/rest/v1/report_leads` +
+    `${SB_URL}/rest/v1/${table}` +
     `?select=kakao,kakao_reply,call_status,result&${leadRangeFilter(date, date)}`;
   const res = await fetch(url, { headers: sbHeaders });
   if (!res.ok) throw new Error("Supabase " + res.status);
@@ -425,9 +427,9 @@ async function handleCard(chatId, msgId) {
   await reply(chatId, `💳 카드 남은 한도\n\n${card}`, msgId);
 }
 
-// 💬 상담 보고
-async function handleConsult(chatId, msgId, date) {
-  const rows = await getLeads(date);
+// 💬 상담 보고 공통 (table: report_leads 또는 gajeon_leads)
+async function consultReport(chatId, msgId, date, table, title) {
+  const rows = await getLeads(date, table);
   const cnt = (field, value) => rows.filter((r) => r[field] === value).length;
   const pending = (n) => (n > 0 ? `\n- 진행 전 : ${n}개` : "");
 
@@ -446,7 +448,7 @@ async function handleConsult(chatId, msgId, date) {
   const rejected = cnt("result", "거절");
 
   const text =
-    `💬 상담 현황 (${titleSuffix(date)})\n\n` +
+    `${title} (${titleSuffix(date)})\n\n` +
     `1. DB 유입 현황\n` +
     `- 총 DB : ${total}개\n` +
     `- 카톡 친추 가능 : ${kakaoOk}개\n` +
@@ -467,6 +469,16 @@ async function handleConsult(chatId, msgId, date) {
     pending(callDone - lineIn - rejected);
 
   await reply(chatId, text, msgId);
+}
+
+// 💬 상담(대출)
+async function handleConsult(chatId, msgId, date) {
+  await consultReport(chatId, msgId, date, "report_leads", "💬 상담 현황(대출)");
+}
+
+// 🛒 상담(가전)
+async function handleConsultGajeon(chatId, msgId, date) {
+  await consultReport(chatId, msgId, date, "gajeon_leads", "🛒 상담 현황(가전)");
 }
 
 // 🧾 정산 보고 (간단 버전 + 이번 달 누적)
@@ -551,7 +563,8 @@ async function handleMenu(chatId, msgId) {
     await reply(
       chatId,
       "아래 버튼으로 보고를 확인하세요.\n" +
-        "날짜별 보기: /정산 11/13, /상담 어제\n" +
+        "상담: /상담 (대출), /상담가전 — 날짜 가능 (예: /상담가전 어제)\n" +
+        "정산: /정산 11/13\n" +
         "기간 광고비: /광고 3일, /광고 11/16~11/18, /광고 이번달\n" +
         "카드 한도: /잔액",
       msgId,
@@ -618,6 +631,7 @@ async function handleButton(cq) {
   try {
     if (cq.data === "ads") await handleAllAds(chatId, null, today, today);
     else if (cq.data === "consult") await handleConsult(chatId, null, today);
+    else if (cq.data === "consult_g") await handleConsultGajeon(chatId, null, today);
     else if (cq.data === "settle") await handleSettle(chatId, null, today);
     else if (cq.data === "card") await handleCard(chatId, null);
   } catch (err) {
@@ -680,27 +694,31 @@ exports.handler = async (event) => {
 
   // "/광고@WomanDB3bot 3일" 같은 형태도 처리
   const text = msg.text.trim().replace(/@\w+/, "");
-  const arg = text.replace(/^\/\S+/, "").trim(); // 명령어 뒤 날짜·기간 부분
+  const cmd = (text.match(/^\/\S+/) || [""])[0]; // 명령어 부분
+  const arg = text.slice(cmd.length).trim();     // 명령어 뒤 날짜·기간 부분
   const id = msg.message_id;
   const today = kstToday();
 
   try {
     if (chatId === REPORT_CHAT) {
-      if (text.startsWith("/광고")) await runAdsReport(chatId, id, handleAllAds, arg);
-      else if (text.startsWith("/상담")) await runReport(chatId, id, handleConsult, arg);
-      else if (text.startsWith("/정산")) await runReport(chatId, id, handleSettle, arg);
-      else if (text.startsWith("/잔액")) await handleCard(chatId, id);
+      if (cmd === "/광고") await runAdsReport(chatId, id, handleAllAds, arg);
+      else if (cmd === "/상담" || cmd === "/상담대출") await runReport(chatId, id, handleConsult, arg);
+      else if (cmd === "/상담가전") await runReport(chatId, id, handleConsultGajeon, arg);
+      else if (cmd === "/정산") await runReport(chatId, id, handleSettle, arg);
+      else if (cmd === "/잔액") await handleCard(chatId, id);
+      else if (cmd === "/메뉴" || cmd === "/start") await handleMenu(chatId, id);
       else if (text === BTN_ADS) await handleAllAds(chatId, id, today, today);
       else if (text === BTN_CONSULT) await handleConsult(chatId, id, today);
+      else if (text === BTN_CONSULT_G) await handleConsultGajeon(chatId, id, today);
       else if (text === BTN_SETTLE) await handleSettle(chatId, id, today);
       else if (text === BTN_CARD) await handleCard(chatId, id);
-      else if (text.startsWith("/메뉴") || text.startsWith("/start")) await handleMenu(chatId, id);
     } else if (chatId === GAJEON_CHAT) {
-      if (text.startsWith("/보고")) await runAdsReport(chatId, id, handleGajeonAds, arg);
-      else if (text.startsWith("/삭제")) await handleDelete(chatId, msg, "gajeon_leads");
+      if (cmd === "/보고") await runAdsReport(chatId, id, handleGajeonAds, arg);
+      else if (cmd === "/상담") await runReport(chatId, id, handleConsultGajeon, arg);
+      else if (cmd === "/삭제") await handleDelete(chatId, msg, "gajeon_leads");
     } else {
-      if (text.startsWith("/보고")) await runAdsReport(chatId, id, handleAds, arg);
-      else if (text.startsWith("/삭제")) await handleDelete(chatId, msg, "report_leads");
+      if (cmd === "/보고") await runAdsReport(chatId, id, handleAds, arg);
+      else if (cmd === "/삭제") await handleDelete(chatId, msg, "report_leads");
     }
   } catch (err) {
     console.error("bot error:", err);
