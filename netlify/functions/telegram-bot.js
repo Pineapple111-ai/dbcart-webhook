@@ -30,9 +30,6 @@ const GAJEON_ACCOUNTS = [
   { label: "최저가공구", id: process.env.META_ACCOUNT_GAJEON, token: process.env.META_TOKEN_A },
 ];
 
-// 카드 한도 며칠치 계산에 쓰는 평균 기간 (어제까지 N일)
-const CARD_AVG_DAYS = 3;
-
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_KEY;
 const BOT = process.env.TELEGRAM_BOT_TOKEN;
@@ -218,12 +215,6 @@ function vndText(vnd) {
   return Math.round(vnd).toLocaleString("en-US") + " VND";
 }
 
-// "18/11/2026 19:05:08" → "11/18 19:05"
-function cardTimeLabel(t) {
-  const m = String(t || "").match(/(\d{2})\/(\d{2})\/\d{4}\s+(\d{2}:\d{2})/);
-  return m ? `${Number(m[2])}/${Number(m[1])} ${m[3]}` : "";
-}
-
 // ===== 데이터 조회 =====
 
 // 메타 광고계정 지출 (기간 합계)
@@ -289,15 +280,6 @@ async function getManPerTr() {
   return (krwPerVnd * 1000000) / 10000;
 }
 
-// 1원이 몇 동인지
-async function getVndPerKrw() {
-  const res = await fetch("https://open.er-api.com/v6/latest/KRW");
-  const json = await res.json();
-  const v = json && json.rates && json.rates.VND;
-  if (!v) throw new Error("환율 조회 실패");
-  return v;
-}
-
 // 카드 남은 한도 (메일 기준)
 async function getCard() {
   const url = `${process.env.CARD_URL}?key=${encodeURIComponent(process.env.CARD_KEY)}`;
@@ -357,29 +339,11 @@ function adsLines(r) {
   );
 }
 
-// 💳 카드 한도 블록 (남은 한도 + 며칠치)
+// 💳 카드 남은 한도 한 줄
 async function cardBlock() {
   try {
-    const today = kstToday();
-    const from = addDays(today, -CARD_AVG_DAYS);
-    const to = addDays(today, -1);
-
-    const [card, vndPerKrw, avg] = await Promise.all([
-      getCard(),
-      getVndPerKrw().catch(() => null),
-      calcAds(from, to, [...AD_ACCOUNTS, ...GAJEON_ACCOUNTS], null),
-    ]);
-
-    let text = `${trText(card.limit)} (${vndText(card.limit)})`;
-
-    const dailyKrw = avg.spend / CARD_AVG_DAYS;
-    let days = "";
-    if (vndPerKrw && dailyKrw > 0) {
-      const d = card.limit / (dailyKrw * vndPerKrw);
-      days = `약 ${d.toFixed(1)}일치 · `;
-    }
-    text += `\n${days}${cardTimeLabel(card.time)} 기준`;
-    return text;
+    const card = await getCard();
+    return `${trText(card.limit)} (${vndText(card.limit)})`;
   } catch (e) {
     return `⚠️ 카드 한도 조회 실패: ${e.message}`;
   }
