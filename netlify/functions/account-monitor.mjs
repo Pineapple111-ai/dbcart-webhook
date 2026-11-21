@@ -2,6 +2,7 @@
 // 15분마다 자동 실행, 상태가 바뀔 때만 텔레그램 알림
 const LOAN_CHAT = "-5318830146";   // 디비 (여성대출) 방
 const GAJEON_CHAT = "-5235472796"; // 디비 (가전공구) 방
+const CASH_CHAT = "-5498536819";   // DB (현금화) 방
 const STALL_MINUTES = 60; // 지출 멈춤 판단 기준 (분)
 
 const SB_URL = process.env.SUPABASE_URL;
@@ -18,7 +19,7 @@ const sbHeaders = {
 const ACCOUNTS = [
   { key: "A", id: process.env.META_ACCOUNT_A, token: process.env.META_TOKEN_A, chat: LOAN_CHAT },
   { key: "B", id: process.env.META_ACCOUNT_B, token: process.env.META_TOKEN_B, chat: LOAN_CHAT },
-  { key: "C", id: process.env.META_ACCOUNT_C, token: process.env.META_TOKEN_C, chat: LOAN_CHAT },
+  { key: "C", id: process.env.META_ACCOUNT_C, token: process.env.META_TOKEN_C, chat: CASH_CHAT },
   { key: "G", id: process.env.META_ACCOUNT_GAJEON, token: process.env.META_TOKEN_A, chat: GAJEON_CHAT },
 ];
 
