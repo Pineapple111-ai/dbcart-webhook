@@ -246,14 +246,15 @@ async function getLeads(date, table) {
   return res.json();
 }
 
-async function getSettleRows(from, to) {
+// 정산 시트 조회: rows = 기간 안의 수입·지출, expected = 처리 "완료"가 아닌 예상 매출 전체
+async function getSettle(from, to) {
   const url =
     `${process.env.SETTLE_URL}?key=${encodeURIComponent(process.env.SETTLE_KEY)}` +
     `&from=${from}&to=${to}`;
   const res = await fetch(url, { redirect: "follow" });
   const json = await res.json();
   if (json.error) throw new Error("정산 시트: " + json.error);
-  return json.rows || [];
+  return { rows: json.rows || [], expected: json.expected || [] };
 }
 
 async function getManPerTr() {
@@ -462,12 +463,12 @@ async function handleSettle(chatId, msgId, date) {
   const monthStart = date.slice(0, 8) + "01";
   const monthNum = Number(date.slice(5, 7));
 
-  const all = await getSettleRows(monthStart, date);
+  const { rows: all, expected } = await getSettle(monthStart, date);
   const rows = all.filter((r) => r.date === date);
 
   let manPerTr = null;
   let rateError = "";
-  if (all.some((r) => r.unit === "tr")) {
+  if (all.some((r) => r.unit === "tr") || expected.some((r) => r.unit === "tr")) {
     try {
       manPerTr = await getManPerTr();
     } catch (e) {
@@ -519,6 +520,20 @@ async function handleSettle(chatId, msgId, date) {
   }
 
   text += `\n\n<b>${monthNum}월 누적 ${man(monthProfit)}</b>`;
+
+  // 예상 매출 (처리 "완료"가 아닌 것 전체, 판매 예정일 순)
+  if (expected.length) {
+    const today = kstToday();
+    const sorted = [...expected].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    const expectedTotal = sorted.reduce((s, r) => s + toMan(r), 0);
+    text += `\n\n[예상 매출] ${sorted.length}건 ${man(expectedTotal)}\n`;
+    text += sorted
+      .map(
+        (r, i) =>
+          `${i + 1}. ${shortLabel(r.date)} ${lineText(r)}${r.date < today ? " ⚠️ 예정일 지남" : ""}`
+      )
+      .join("\n");
+  }
 
   if (rateError) {
     text += `\n\n⚠️ ${esc(rateError)} — tr 금액은 합계에서 빠졌습니다.`;
