@@ -1,8 +1,8 @@
 // 디비알림봇 명령어 처리
-// - 보고 방: /광고(기간·일별 가능), /상담(대출), /상담가전, /정산 (하루 또는 기간), /잔액, /메뉴 (+ 버튼)
+// - 보고 방: /광고(기간·일별 가능), /상담(대출), /상담가전, /상담현금화, /정산 (하루 또는 기간), /잔액, /메뉴 (+ 버튼)
 // - 디비 (여성대출) 방: /삭제, /보고 (기간 가능)
 // - 디비 (가전공구) 방: /삭제, /보고 (기간 가능), /상담 (+ 날짜)
-// - DB (현금화) 방: /삭제, /보고 (기간 가능)
+// - DB (현금화) 방: /삭제, /보고 (기간 가능), /상담 (+ 날짜)
 const LEAD_CHAT = "-5318830146";   // 디비 (여성대출) 방
 const REPORT_CHAT = "-5391256412"; // 보고 방
 const GAJEON_CHAT = "-5235472796"; // 디비 (가전공구) 방
@@ -23,6 +23,7 @@ const BUTTON_MODE = "both";
 const BTN_ADS = "📊 광고";
 const BTN_CONSULT = "💬 상담(대출)";
 const BTN_CONSULT_G = "🛒 상담(가전)";
+const BTN_CONSULT_C = "💰 상담(현금화)";
 const BTN_SETTLE = "🧾 정산";
 const BTN_CARD = "💳 잔액";
 
@@ -57,7 +58,7 @@ const usePinned = BUTTON_MODE === "pinned" || BUTTON_MODE === "both";
 const REPLY_KEYBOARD = {
   keyboard: [
     [{ text: BTN_ADS }, { text: BTN_SETTLE }, { text: BTN_CARD }],
-    [{ text: BTN_CONSULT }, { text: BTN_CONSULT_G }],
+    [{ text: BTN_CONSULT }, { text: BTN_CONSULT_G }, { text: BTN_CONSULT_C }],
   ],
   resize_keyboard: true,
   is_persistent: true,
@@ -74,6 +75,7 @@ const INLINE_MENU = {
     [
       { text: BTN_CONSULT, callback_data: "consult" },
       { text: BTN_CONSULT_G, callback_data: "consult_g" },
+      { text: BTN_CONSULT_C, callback_data: "consult_c" },
     ],
   ],
 };
@@ -608,6 +610,10 @@ async function handleConsultGajeon(chatId, msgId, date) {
   await consultReport(chatId, msgId, date, "gajeon_leads", "🛒 상담 현황(가전)");
 }
 
+async function handleConsultCash(chatId, msgId, date) {
+  await consultReport(chatId, msgId, date, "cash_leads", "💰 상담 현황(현금화)");
+}
+
 // 하루 정산
 async function handleSettle(chatId, msgId, date) {
   const monthStart = date.slice(0, 8) + "01";
@@ -778,7 +784,7 @@ async function handleMenu(chatId, msgId) {
     await reply(
       chatId,
       "아래 버튼으로 보고를 확인하세요.\n" +
-        "상담: /상담 (대출), /상담가전 — 날짜 가능 (예: /상담가전 어제)\n" +
+        "상담: /상담 (대출), /상담가전, /상담현금화 — 날짜 가능 (예: /상담현금화 어제)\n" +
         "정산: /정산 11/13, /정산 이번달, /정산 7일, /정산 11/1~11/15\n" +
         "기간 광고비: /광고 3일, /광고 11/16~11/18, /광고 이번달\n" +
         "날짜별 광고비: /광고 7일 일별, /광고 이번달 일별\n" +
@@ -845,6 +851,7 @@ async function handleButton(cq) {
     if (cq.data === "ads") await handleAllAds(chatId, null, today, today);
     else if (cq.data === "consult") await handleConsult(chatId, null, today);
     else if (cq.data === "consult_g") await handleConsultGajeon(chatId, null, today);
+    else if (cq.data === "consult_c") await handleConsultCash(chatId, null, today);
     else if (cq.data === "settle") await handleSettle(chatId, null, today);
     else if (cq.data === "card") await handleCard(chatId, null);
   } catch (err) {
@@ -951,12 +958,14 @@ exports.handler = async (event) => {
       if (cmd === "/광고") await runAllAdsReport(chatId, id, arg);
       else if (cmd === "/상담" || cmd === "/상담대출") await runReport(chatId, id, handleConsult, arg);
       else if (cmd === "/상담가전") await runReport(chatId, id, handleConsultGajeon, arg);
+      else if (cmd === "/상담현금화") await runReport(chatId, id, handleConsultCash, arg);
       else if (cmd === "/정산") await runSettleReport(chatId, id, arg);
       else if (cmd === "/잔액") await handleCard(chatId, id);
       else if (cmd === "/메뉴" || cmd === "/start") await handleMenu(chatId, id);
       else if (text === BTN_ADS) await handleAllAds(chatId, id, today, today);
       else if (text === BTN_CONSULT) await handleConsult(chatId, id, today);
       else if (text === BTN_CONSULT_G) await handleConsultGajeon(chatId, id, today);
+      else if (text === BTN_CONSULT_C) await handleConsultCash(chatId, id, today);
       else if (text === BTN_SETTLE) await handleSettle(chatId, id, today);
       else if (text === BTN_CARD) await handleCard(chatId, id);
     } else if (chatId === GAJEON_CHAT) {
@@ -965,6 +974,7 @@ exports.handler = async (event) => {
       else if (cmd === "/삭제") await handleDelete(chatId, msg, "gajeon_leads");
     } else if (chatId === CASH_CHAT) {
       if (cmd === "/보고") await runAdsReport(chatId, id, handleCashAds, arg);
+      else if (cmd === "/상담") await runReport(chatId, id, handleConsultCash, arg);
       else if (cmd === "/삭제") await handleDelete(chatId, msg, "cash_leads");
     } else {
       if (cmd === "/보고") await runAdsReport(chatId, id, handleAds, arg);
