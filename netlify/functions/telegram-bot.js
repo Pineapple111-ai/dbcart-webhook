@@ -1,5 +1,5 @@
 // 디비알림봇 명령어 처리
-// - 보고 방: /광고(기간 가능), /상담(대출), /상담가전, /정산 (+ 날짜), /잔액, /메뉴 (+ 버튼)
+// - 보고 방: /광고(기간 가능), /상담(대출), /상담가전, /정산 (하루 또는 기간), /잔액, /메뉴 (+ 버튼)
 // - 디비 (여성대출) 방: /삭제, /보고 (기간 가능)
 // - 디비 (가전공구) 방: /삭제, /보고 (기간 가능), /상담 (+ 날짜)
 // - DB (현금화) 방: /삭제, /보고 (기간 가능)
@@ -151,7 +151,7 @@ function parseDateArg(arg) {
   return null;
 }
 
-// 기간 읽기 (광고 보고용). 형식이 틀리면 null
+// 기간 읽기 (광고·정산 보고용). 형식이 틀리면 null
 function parseRangeArg(arg) {
   const s = (arg || "").trim().replace(/\s+/g, "");
   const today = kstToday();
@@ -253,7 +253,7 @@ async function getLeads(date, table) {
 
 // 정산 시트 조회:
 // rows = 기간 안의 수입·지출
-// expected = 예상 탭에서 처리 "완료"가 아닌 줄 전체 (type: "예상" 또는 "미결제")
+// expected = 예상,미결제 탭에서 처리 "완료"가 아닌 줄 전체 (type: "예상" 또는 "미결제")
 async function getSettle(from, to) {
   const url =
     `${process.env.SETTLE_URL}?key=${encodeURIComponent(process.env.SETTLE_KEY)}` +
@@ -466,6 +466,7 @@ async function handleConsultGajeon(chatId, msgId, date) {
   await consultReport(chatId, msgId, date, "gajeon_leads", "🛒 상담 현황(가전)");
 }
 
+// 하루 정산
 async function handleSettle(chatId, msgId, date) {
   const monthStart = date.slice(0, 8) + "01";
   const monthNum = Number(date.slice(5, 7));
@@ -564,13 +565,79 @@ async function handleSettle(chatId, msgId, date) {
   await reply(chatId, text, msgId, false, true);
 }
 
+// 기간 정산 합계 (예: /정산 이번달, /정산 7일, /정산 11/1~11/15)
+async function handleSettleRange(chatId, msgId, from, to) {
+  const { rows, expected } = await getSettle(from, to);
+
+  let manPerTr = null;
+  let rateError = "";
+  if (rows.some((r) => r.unit === "tr") || expected.some((r) => r.unit === "tr")) {
+    try {
+      manPerTr = await getManPerTr();
+    } catch (e) {
+      rateError = e.message;
+    }
+  }
+
+  const toMan = (r) => {
+    if (r.unit === "tr") return manPerTr === null ? 0 : r.amount * manPerTr;
+    return r.amount;
+  };
+
+  const income = rows.filter((r) => r.type === "수입");
+  const expense = rows.filter((r) => r.type === "지출");
+  const incomeTotal = income.reduce((s, r) => s + toMan(r), 0);
+  const expenseTotal = expense.reduce((s, r) => s + toMan(r), 0);
+
+  let text = `* ${rangeSuffix(from, to)} 정산\n\n`;
+
+  if (!rows.length) {
+    text += `입력된 정산이 없습니다.`;
+  } else {
+    text += `[수입] ${income.length}건 ${man(incomeTotal)}\n`;
+    text += `[지출] ${expense.length}건 ${man(expenseTotal)}\n\n`;
+    text += `<b>기간 수익 ${man(incomeTotal - expenseTotal)}</b>`;
+
+    // 날짜별
+    const days = {};
+    rows.forEach((r) => {
+      if (!days[r.date]) days[r.date] = { inc: 0, exp: 0 };
+      if (r.type === "수입") days[r.date].inc += toMan(r);
+      else if (r.type === "지출") days[r.date].exp += toMan(r);
+    });
+    const dayLines = Object.keys(days)
+      .sort()
+      .map((d) => {
+        const v = days[d];
+        return `${shortLabel(d)} 수입 ${man(v.inc)} · 지출 ${man(v.exp)} → ${man(v.inc - v.exp)}`;
+      });
+    text += `\n\n[날짜별]\n${dayLines.join("\n")}`;
+  }
+
+  // 지금 남아 있는 미결제·예상 (기간과 상관없이 현재 기준)
+  const unpaid = expected.filter((r) => r.type === "미결제");
+  const planned = expected.filter((r) => r.type !== "미결제");
+  if (unpaid.length) {
+    text += `\n\n[미결제 현재] ${unpaid.length}건 ${man(unpaid.reduce((s, r) => s + toMan(r), 0))}`;
+  }
+  if (planned.length) {
+    text += `\n[예상 매출 현재] ${planned.length}건 ${man(planned.reduce((s, r) => s + toMan(r), 0))}`;
+  }
+
+  if (rateError) {
+    text += `\n\n⚠️ ${esc(rateError)} — tr 금액은 합계에서 빠졌습니다.`;
+  }
+
+  await reply(chatId, text, msgId, false, true);
+}
+
 async function handleMenu(chatId, msgId) {
   if (useKeyboard) {
     await reply(
       chatId,
       "아래 버튼으로 보고를 확인하세요.\n" +
         "상담: /상담 (대출), /상담가전 — 날짜 가능 (예: /상담가전 어제)\n" +
-        "정산: /정산 11/13\n" +
+        "정산: /정산 11/13, /정산 이번달, /정산 7일, /정산 11/1~11/15\n" +
         "기간 광고비: /광고 3일, /광고 11/16~11/18, /광고 이번달\n" +
         "카드 한도: /잔액",
       msgId,
@@ -665,6 +732,21 @@ async function runAdsReport(chatId, msgId, handler, arg) {
   await handler(chatId, msgId, r.from, r.to);
 }
 
+// 정산: 하루면 하루 보고, 기간이면 기간 합계
+async function runSettleReport(chatId, msgId, arg) {
+  const r = parseRangeArg(arg);
+  if (!r) {
+    await reply(
+      chatId,
+      "날짜 형식을 확인해주세요.\n예: /정산 11/13, /정산 이번달, /정산 7일, /정산 11/1~11/15",
+      msgId
+    );
+    return;
+  }
+  if (r.from === r.to) await handleSettle(chatId, msgId, r.from);
+  else await handleSettleRange(chatId, msgId, r.from, r.to);
+}
+
 exports.handler = async (event) => {
   const secret = event.headers["x-telegram-bot-api-secret-token"];
   if (secret !== process.env.TG_WEBHOOK_SECRET) {
@@ -707,7 +789,7 @@ exports.handler = async (event) => {
       if (cmd === "/광고") await runAdsReport(chatId, id, handleAllAds, arg);
       else if (cmd === "/상담" || cmd === "/상담대출") await runReport(chatId, id, handleConsult, arg);
       else if (cmd === "/상담가전") await runReport(chatId, id, handleConsultGajeon, arg);
-      else if (cmd === "/정산") await runReport(chatId, id, handleSettle, arg);
+      else if (cmd === "/정산") await runSettleReport(chatId, id, arg);
       else if (cmd === "/잔액") await handleCard(chatId, id);
       else if (cmd === "/메뉴" || cmd === "/start") await handleMenu(chatId, id);
       else if (text === BTN_ADS) await handleAllAds(chatId, id, today, today);
