@@ -1,5 +1,5 @@
 // 디비알림봇 명령어 처리
-// - 보고 방: /광고(기간 가능), /상담(대출), /상담가전, /정산 (하루 또는 기간), /잔액, /메뉴 (+ 버튼)
+// - 보고 방: /광고(기간·일별 가능), /상담(대출), /상담가전, /정산 (하루 또는 기간), /잔액, /메뉴 (+ 버튼)
 // - 디비 (여성대출) 방: /삭제, /보고 (기간 가능)
 // - 디비 (가전공구) 방: /삭제, /보고 (기간 가능), /상담 (+ 날짜)
 // - DB (현금화) 방: /삭제, /보고 (기간 가능)
@@ -10,6 +10,9 @@ const CASH_CHAT = "-5498536819";   // DB (현금화) 방
 
 // 계정 C 광고비 기준일: 이 날짜부터는 현금화, 전날까지는 여성대출로 계산
 const CASH_START = "2026-11-21";
+
+// 일별 보고 최대 일수
+const MAX_DAILY_DAYS = 62;
 
 // 버튼 방식
 // "both"     = 입력창 아래 버튼(A) + 고정 메시지 버튼(B)
@@ -202,6 +205,11 @@ function man(n) {
   return `${Math.round(n).toLocaleString("ko-KR")}만원`;
 }
 
+// 광고비 짧게 (소수 1자리 만원)
+function manShort(n) {
+  return `${(n / 10000).toFixed(1).replace(/\.0$/, "")}만원`;
+}
+
 function trText(vnd) {
   return (vnd / 1000000).toFixed(1).replace(/\.0$/, "") + "tr";
 }
@@ -227,6 +235,23 @@ async function getSpend(accountId, token, from, to) {
   return json.data && json.data[0] ? Number(json.data[0].spend) : 0;
 }
 
+// 날짜별 광고비 { "YYYY-MM-DD": 금액 }
+async function getDailySpend(accountId, token, from, to) {
+  const url =
+    `https://graph.facebook.com/v27.0/act_${accountId}/insights` +
+    `?fields=spend&time_increment=1&limit=500` +
+    `&time_range=${encodeURIComponent(JSON.stringify({ since: from, until: to }))}` +
+    `&access_token=${token}`;
+  const res = await fetch(url);
+  const json = await res.json();
+  if (json.error) throw new Error(json.error.message);
+  const map = {};
+  (json.data || []).forEach((r) => {
+    map[r.date_start] = (map[r.date_start] || 0) + Number(r.spend || 0);
+  });
+  return map;
+}
+
 function leadRangeFilter(from, to) {
   const start = encodeURIComponent(`${from}T00:00:00+09:00`);
   const end = encodeURIComponent(`${nextDay(to)}T00:00:00+09:00`);
@@ -240,6 +265,27 @@ async function getLeadCount(from, to, table) {
   });
   const range = res.headers.get("content-range") || "";
   return Number(range.split("/")[1] || 0);
+}
+
+// 날짜별 디비 개수 { "YYYY-MM-DD": 개수 } (한국시간 기준)
+async function getLeadDays(table, from, to) {
+  const map = {};
+  let offset = 0;
+  while (true) {
+    const url = `${SB_URL}/rest/v1/${table}?select=created_at&${leadRangeFilter(from, to)}&order=id.asc`;
+    const res = await fetch(url, {
+      headers: { ...sbHeaders, Range: `${offset}-${offset + 999}` },
+    });
+    if (!res.ok) throw new Error("Supabase " + res.status);
+    const rows = await res.json();
+    rows.forEach((r) => {
+      const d = ymd(new Date(new Date(r.created_at).getTime() + 9 * 60 * 60 * 1000));
+      map[d] = (map[d] || 0) + 1;
+    });
+    if (rows.length < 1000) break;
+    offset += 1000;
+  }
+  return map;
 }
 
 async function getLeads(date, table) {
@@ -288,6 +334,26 @@ async function reply(chatId, text, replyTo, withKeyboard, html) {
     body.reply_markup = REPLY_KEYBOARD;
   }
   return tg("sendMessage", body);
+}
+
+// 긴 글은 줄 단위로 나눠서 여러 번 보내기 (텔레그램 글자 제한)
+async function replyLong(chatId, text, replyTo) {
+  const LIMIT = 3800;
+  const chunks = [];
+  let cur = "";
+  text.split("\n").forEach((line) => {
+    if ((cur + "\n" + line).length > LIMIT && cur) {
+      chunks.push(cur);
+      cur = line;
+    } else {
+      cur = cur ? cur + "\n" + line : line;
+    }
+  });
+  if (cur) chunks.push(cur);
+
+  for (let i = 0; i < chunks.length; i++) {
+    await reply(chatId, chunks[i], i === 0 ? replyTo : null);
+  }
 }
 
 // ===== 보고 =====
@@ -411,6 +477,82 @@ async function handleAllAds(chatId, msgId, from, to) {
 
   if (errors.length) text += `\n\n⚠️ ${errors.join("\n⚠️ ")}`;
   await reply(chatId, text, msgId);
+}
+
+// 날짜별 광고비 (예: /광고 7일 일별, /광고 이번달 일별)
+async function handleAdsDaily(chatId, msgId, from, to) {
+  const days = daysBetween(from, to) + 1;
+  if (days > MAX_DAILY_DAYS) {
+    await reply(chatId, `일별 보고는 최대 ${MAX_DAILY_DAYS}일까지 볼 수 있어요. 기간을 줄여주세요.`, msgId);
+    return;
+  }
+
+  const errors = [];
+  const liveOf = (list) => list.filter((a) => a.id && a.token);
+  const safeDaily = async (acc) => {
+    try {
+      return await getDailySpend(acc.id, acc.token, from, to);
+    } catch (e) {
+      errors.push(`${acc.label} 조회 실패: ${e.message}`);
+      return {};
+    }
+  };
+  const safeLeads = async (table, label) => {
+    try {
+      return await getLeadDays(table, from, to);
+    } catch (e) {
+      errors.push(`${label} 디비 조회 실패: ${e.message}`);
+      return {};
+    }
+  };
+
+  const [loanMaps, cMap, gajeonMaps, loanLeads, gajeonLeads, cashLeads] = await Promise.all([
+    Promise.all(liveOf(LOAN_ACCOUNTS).map(safeDaily)),
+    liveOf([ACCOUNT_C]).length ? safeDaily(ACCOUNT_C) : Promise.resolve({}),
+    Promise.all(liveOf(GAJEON_ACCOUNTS).map(safeDaily)),
+    safeLeads("report_leads", "여성대출"),
+    safeLeads("gajeon_leads", "가전공구"),
+    safeLeads("cash_leads", "현금화"),
+  ]);
+
+  const sumMaps = (maps, d) => maps.reduce((s, m) => s + (m[d] || 0), 0);
+
+  const lines = [];
+  let totalSpend = 0;
+  let totalLeads = 0;
+
+  for (let d = to; d >= from; d = addDays(d, -1)) {
+    const loanSpend = sumMaps(loanMaps, d) + (d < CASH_START ? cMap[d] || 0 : 0);
+    const cashSpend = d >= CASH_START ? cMap[d] || 0 : 0;
+    const gajeonSpend = sumMaps(gajeonMaps, d);
+
+    const segs = [
+      { name: "여성대출", spend: loanSpend, count: loanLeads[d] || 0 },
+      { name: "가전공구", spend: gajeonSpend, count: gajeonLeads[d] || 0 },
+      { name: "현금화", spend: cashSpend, count: cashLeads[d] || 0 },
+    ].filter((s) => s.spend > 0 || s.count > 0);
+
+    const daySpend = loanSpend + gajeonSpend + cashSpend;
+    totalSpend += daySpend;
+    totalLeads += segs.reduce((s, x) => s + x.count, 0);
+
+    if (!segs.length) {
+      lines.push(`${shortLabel(d)} 광고 없음`);
+    } else {
+      lines.push(
+        `${shortLabel(d)} 합계 ${manShort(daySpend)} — ` +
+          segs.map((s) => `${s.name} ${manShort(s.spend)}(${s.count}개)`).join(" / ")
+      );
+    }
+  }
+
+  let text =
+    `📊 광고 일별 (${rangeSuffix(from, to)})\n\n` +
+    lines.join("\n") +
+    `\n\n[기간 합계] 광고비 ${won(totalSpend)} · 디비 ${totalLeads}개`;
+
+  if (errors.length) text += `\n\n⚠️ ${errors.join("\n⚠️ ")}`;
+  await replyLong(chatId, text, msgId);
 }
 
 async function handleCard(chatId, msgId) {
@@ -639,6 +781,7 @@ async function handleMenu(chatId, msgId) {
         "상담: /상담 (대출), /상담가전 — 날짜 가능 (예: /상담가전 어제)\n" +
         "정산: /정산 11/13, /정산 이번달, /정산 7일, /정산 11/1~11/15\n" +
         "기간 광고비: /광고 3일, /광고 11/16~11/18, /광고 이번달\n" +
+        "날짜별 광고비: /광고 7일 일별, /광고 이번달 일별\n" +
         "카드 한도: /잔액",
       msgId,
       true
@@ -732,6 +875,25 @@ async function runAdsReport(chatId, msgId, handler, arg) {
   await handler(chatId, msgId, r.from, r.to);
 }
 
+// 보고 방 /광고: "일별"이 붙으면 날짜별, 아니면 기간 합계
+async function runAllAdsReport(chatId, msgId, arg) {
+  const daily = /일별/.test(arg);
+  const cleaned = arg.replace(/일별/g, "").trim();
+  const range = daily && !cleaned ? "7일" : cleaned;
+
+  const r = parseRangeArg(range);
+  if (!r) {
+    await reply(
+      chatId,
+      "기간 형식을 확인해주세요.\n예: 3일, 11/16~11/18, 이번달, 어제, 11/13\n날짜별: 7일 일별, 이번달 일별",
+      msgId
+    );
+    return;
+  }
+  if (daily) await handleAdsDaily(chatId, msgId, r.from, r.to);
+  else await handleAllAds(chatId, msgId, r.from, r.to);
+}
+
 // 정산: 하루면 하루 보고, 기간이면 기간 합계
 async function runSettleReport(chatId, msgId, arg) {
   const r = parseRangeArg(arg);
@@ -786,7 +948,7 @@ exports.handler = async (event) => {
 
   try {
     if (chatId === REPORT_CHAT) {
-      if (cmd === "/광고") await runAdsReport(chatId, id, handleAllAds, arg);
+      if (cmd === "/광고") await runAllAdsReport(chatId, id, arg);
       else if (cmd === "/상담" || cmd === "/상담대출") await runReport(chatId, id, handleConsult, arg);
       else if (cmd === "/상담가전") await runReport(chatId, id, handleConsultGajeon, arg);
       else if (cmd === "/정산") await runSettleReport(chatId, id, arg);
