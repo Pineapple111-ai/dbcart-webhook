@@ -117,6 +117,11 @@ function nextDay(date) {
   return addDays(date, 1);
 }
 
+// 두 날짜(YYYY-MM-DD) 사이 일수 (b - a)
+function daysBetween(a, b) {
+  return Math.round((new Date(b + "T00:00:00Z") - new Date(a + "T00:00:00Z")) / 86400000);
+}
+
 function shortLabel(date) {
   const [, m, d] = date.split("-");
   return `${Number(m)}/${Number(d)}`;
@@ -246,7 +251,9 @@ async function getLeads(date, table) {
   return res.json();
 }
 
-// 정산 시트 조회: rows = 기간 안의 수입·지출, expected = 처리 "완료"가 아닌 예상 매출 전체
+// 정산 시트 조회:
+// rows = 기간 안의 수입·지출
+// expected = 예상 탭에서 처리 "완료"가 아닌 줄 전체 (type: "예상" 또는 "미결제")
 async function getSettle(from, to) {
   const url =
     `${process.env.SETTLE_URL}?key=${encodeURIComponent(process.env.SETTLE_KEY)}` +
@@ -521,13 +528,28 @@ async function handleSettle(chatId, msgId, date) {
 
   text += `\n\n<b>${monthNum}월 누적 ${man(monthProfit)}</b>`;
 
-  // 예상 매출 (처리 "완료"가 아닌 것 전체, 판매 예정일 순)
-  if (expected.length) {
-    const today = kstToday();
-    const sorted = [...expected].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-    const expectedTotal = sorted.reduce((s, r) => s + toMan(r), 0);
-    text += `\n\n[예상 매출] ${sorted.length}건 ${man(expectedTotal)}\n`;
-    text += sorted
+  const byDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+  const today = kstToday();
+
+  // 미결제 (판매는 됐는데 입금 전, 오래된 순)
+  const unpaid = expected.filter((r) => r.type === "미결제").sort(byDate);
+  if (unpaid.length) {
+    const unpaidTotal = unpaid.reduce((s, r) => s + toMan(r), 0);
+    text += `\n\n[미결제] ${unpaid.length}건 ${man(unpaidTotal)}\n`;
+    text += unpaid
+      .map((r, i) => {
+        const late = daysBetween(r.date, today);
+        return `${i + 1}. ${shortLabel(r.date)} ${lineText(r)}${late > 0 ? ` ⚠️ ${late}일 경과` : ""}`;
+      })
+      .join("\n");
+  }
+
+  // 예상 매출 (아직 입금 전인 예상, 판매 예정일 순)
+  const planned = expected.filter((r) => r.type !== "미결제").sort(byDate);
+  if (planned.length) {
+    const plannedTotal = planned.reduce((s, r) => s + toMan(r), 0);
+    text += `\n\n[예상 매출] ${planned.length}건 ${man(plannedTotal)}\n`;
+    text += planned
       .map(
         (r, i) =>
           `${i + 1}. ${shortLabel(r.date)} ${lineText(r)}${r.date < today ? " ⚠️ 예정일 지남" : ""}`
